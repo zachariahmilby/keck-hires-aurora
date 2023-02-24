@@ -1,6 +1,6 @@
 import numpy as np
-from astroquery.jplhorizons import Horizons
 from astropy.time import Time
+from astroquery.jplhorizons import Horizons
 
 from hiresaurora.general import naif_codes
 

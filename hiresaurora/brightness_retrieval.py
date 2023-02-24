@@ -2,20 +2,20 @@ import warnings
 from pathlib import Path
 
 import astropy.units as u
-import matplotlib.pyplot as plt
 import matplotlib.colors as colors
+import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
+from astropy.convolution import convolve, Gaussian2DKernel
 from astropy.io import fits
 from astropy.time import Time
+from hirespipeline.files import make_directory
 from lmfit import Parameters
 from lmfit.model import ModelResult
 from lmfit.models import ConstantModel, GaussianModel
-from astropy.convolution import convolve, Gaussian2DKernel
 
-from hirespipeline.files import make_directory
-from hiresaurora.background_subtraction import _Background
 from hiresaurora.alignment import _TraceOffsets
+from hiresaurora.background_subtraction import _Background
 from hiresaurora.calibration import _FluxCalibration
 from hiresaurora.ephemeris import _get_ephemeris
 from hiresaurora.general import _doppler_shift_wavelengths, rcparams, \
@@ -648,21 +648,3 @@ def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
     retrieval.run_all(extended=extended, trim_bottom=trim_bottom,
                       trim_top=trim_top, horizontal_offset=horizontal_offset,
                       seeing=seeing)
-
-
-if __name__ == "__main__":
-    # run_retrieval(
-    #     reduced_data_directory='/Users/zachariahmilby/Documents/School/'
-    #                            'Planetary Sciences PhD/Projects/'
-    #                            'Galilean Satellite Aurora (Katherine de Kleer)'
-    #                            '/HIRES/Data/Io 2022-11-24/reduced',
-    #     extended=True, trim_bottom=6, trim_top=8, seeing=2,
-    #     horizontal_offset=0)
-
-    run_retrieval(
-        reduced_data_directory='/Users/zachariahmilby/Documents/School/'
-                               'Planetary Sciences PhD/Projects/'
-                               'Galilean Satellite Aurora (Katherine de Kleer)'
-                               '/HIRES/Data/Ganymede 2021-06-08/reduced',
-        extended=False, trim_bottom=2, trim_top=4, seeing=4/5,
-        horizontal_offset=0)

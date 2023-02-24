@@ -17,6 +17,15 @@ brightness-retrieval tool.
 [^2]: https://doi.org/10.3847/PSJ/acb53c
 [^3]: https://doi.org/10.3847/PSJ/ac85b0
 
+## Installation
+I'm assuming you've already created a virtual environment and installed the
+`hirespipeline` package, also available on my Github page. The steps are the
+same as installing that package:
+1. Activate your virtual environment:<br>
+    `% conda activate hires_reduction`
+2. Install the `hiresaurora` package and its dependencies:<br>
+    `% python -m pip install git+https://github.com/zachariahmilby/keck-hires-aurora.git`
+
 ## Predicting Eclipses
 To find when eclipses occur (or to find out information about an eclipse you've 
 already observed), import the `EclipsePrediction` class:

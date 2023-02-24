@@ -1,7 +1,7 @@
 from pathlib import Path
 
-import astropy.units as u
 import astropy.constants as c
+import astropy.units as u
 import numpy as np
 
 _package_directory = Path(__file__).resolve().parent
