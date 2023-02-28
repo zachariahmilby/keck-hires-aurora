@@ -39,8 +39,13 @@ is too ambiguous:
 `ValueError: Ambiguous target name; provide unique id`, followed by a list 
 of potential alternatives. I found this happened with Io and Europa. For these 
 satellites, you can just enter the object ID#: 501 for Io and 502 for Europa. 
-Depending on the timespan you've specified, it may take a minute or two to run. 
-For example, if you want to predict Ganymede eclipses from June 1 to September 1, 2021:
+There's also an option to set a minimum relative velocity (in km/s) using the 
+keyword `minimum_deltav`. The default is 12.6 km/s, which shifts 557.7 nm by 
+one slit from the Earth airglow. However, ideally I think you'd want a bit
+more, maybe a shift of 1.5 slit widths, in which case the minimum would be 
+19 km/s. Depending on the timespan you've specified, it may take a minute or 
+two to run. For example, if you want to predict Ganymede eclipses from June 1 
+to September 1, 2021:
 
 ```
 >>> eclipse_prediction = EclipsePrediction(starting_datetime='2021-06-01', ending_datetime='2021-09-01', target='Ganymede')

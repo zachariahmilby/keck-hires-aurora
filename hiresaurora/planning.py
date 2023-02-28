@@ -251,19 +251,34 @@ class EclipsePrediction:
     target : str
         The Galilean moon for which you want to find eclipses. Io, Europa,
         Ganymede or Callisto.
+    minimum_deltav: int or float
+        If you want to eliminate any eclipses under a certain relative velocity
+        (either positive or negative), declare the minimum here in km/s. I've
+        set it to a default minimum of 12.6 km/s, which accounts for a shift of
+        a single slit from the Earth airglow at 557.7 nm. However, I think an
+        ideal shift might be more like 1.5 slit widths, in which case it should
+        be 19 km/s.
     """
 
     def __init__(self, starting_datetime: str, ending_datetime: str,
-                 target: str):
+                 target: str, minimum_deltav: int | float = 12.6):
         self._target = target_info[target]['ID']
         self._target_name = target
         self._starting_datetime = starting_datetime
         self._ending_datetime = ending_datetime
+        self._minimum_deltav = self._convert_deltav(minimum_deltav)
         self._eclipses = self._find_eclipses()
         print(self._print_string())
 
     def __str__(self):
         return self._print_string()
+
+    @staticmethod
+    def _convert_deltav(deltav: int | float):
+        deltav = float(deltav)
+        if not isinstance(deltav, u.Quantity):
+            deltav = deltav * u.km / u.s
+        return deltav
 
     @staticmethod
     def _consecutive_integers(
@@ -317,17 +332,16 @@ class EclipsePrediction:
         the duration of the eclipse, the range in airmass and the satellite's
         relative velocity.
         """
-        print(f'\n{len(self._eclipses)} {self._target_name} eclipse(s) '
-              f'identified between {self._starting_datetime} and '
-              f'{self._ending_datetime}.\n')
         df = pd.DataFrame(
             columns=['Starting Time (Keck/UTC)', 'Ending Time (Keck/UTC)',
                      'Starting Time (California)', 'Ending Time (California)',
                      'Duration', 'Airmass Range', 'Relative Velocity'])
         for eclipse in range(len(self._eclipses)):
+            relative_velocity = np.mean(self._eclipses[eclipse]['delta_rate'])
+            if np.abs(relative_velocity) < self._minimum_deltav.value:
+                continue
             times = self._eclipses[eclipse]['datetime_str']
             airmass = self._eclipses[eclipse]['airmass']
-            relative_velocity = np.mean(self._eclipses[eclipse]['delta_rate'])
             starting_time_utc = times[0]
             ending_time_utc = times[-1]
             data = {
@@ -343,9 +357,12 @@ class EclipsePrediction:
                     _calculate_duration(starting_time_utc, ending_time_utc),
                 'Airmass Range':
                     f"{np.min(airmass):.3f} to {np.max(airmass):.3f}",
-                'Relative Velocity': f"{relative_velocity:.3f} km/s"
+                'Relative Velocity': f"{relative_velocity:.1f} km/s"
             }
             df = pd.concat([df, pd.DataFrame(data, index=[0])])
+        print(f'\n{len(df)} {self._target_name} eclipse(s) '
+              f'identified between {self._starting_datetime} and '
+              f'{self._ending_datetime}.\n')
         return pd.DataFrame(df).to_string(index=False, justify='left')
 
     @staticmethod
