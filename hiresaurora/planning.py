@@ -302,7 +302,7 @@ class EclipsePrediction:
         eclipses = self._consecutive_integers(
             _get_eclipse_indices(initial_ephemeris))
         if len(eclipses[-1]) == 0:
-            raise Exception('Sorry, no eclipses found!')
+            return data
         for eclipse in eclipses:
             self._target_name = \
                 initial_ephemeris['targetname'][0].split(' ')[0]
@@ -332,6 +332,8 @@ class EclipsePrediction:
         the duration of the eclipse, the range in airmass and the satellite's
         relative velocity.
         """
+        if len(self._eclipses) == 0:
+            return 'Sorry, no eclipses found!'
         df = pd.DataFrame(
             columns=['Starting Time (Keck/UTC)', 'Ending Time (Keck/UTC)',
                      'Starting Time (California)', 'Ending Time (California)',

@@ -60,7 +60,7 @@ Starting Time (Keck/UTC) Ending Time (Keck/UTC) Starting Time (California) Endin
 ```
 
 If you choose a time period without any eclipses (like January 1 to February 
-1, 2021), you'll get an error message:
+1, 2021), you'll get an error message (but not an exception):
 
 ```
 >>> eclipse_prediction = EclipsePrediction(starting_datetime='2021-01-01', ending_datetime='2021-02-01', target='Ganymede')
