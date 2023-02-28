@@ -30,7 +30,7 @@ same as installing that package:
 To find when eclipses occur (or to find out information about an eclipse you've 
 already observed), import the `EclipsePrediction` class:
 
-```>>> from khan import EclipsePrediction```
+```>>> from hiresaurora import EclipsePrediction```
 
 To predict eclipses, set a starting and ending date (`'YYYY-MM-DD HH:MM'` 
 format, time optional) and a target satellite (`'Io'`, `'Europa'`, `'Ganymede'` 
