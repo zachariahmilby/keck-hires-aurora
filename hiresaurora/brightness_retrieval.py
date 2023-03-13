@@ -12,7 +12,7 @@ from astropy.time import Time
 from hirespipeline.files import make_directory
 from lmfit import Parameters
 from lmfit.model import ModelResult
-from lmfit.models import ConstantModel, GaussianModel
+from lmfit.models import LinearModel, GaussianModel
 
 from hiresaurora.alignment import _TraceOffsets
 from hiresaurora.background_subtraction import _Background
@@ -195,11 +195,12 @@ class _Retrieval:
                           for wavelength in line_wavelengths]
         n_lines = len(center_indices)
         prefixes = [f'gaussian{i + 1}_' for i in range(n_lines)]
-        model = ConstantModel(prefix='constant_')
+        model = LinearModel(prefix='linear_')
         model += np.sum([GaussianModel(prefix=prefix) for prefix in prefixes],
                         dtype=object)
         params = Parameters()
-        params.add('constant_c', value=0, min=-np.inf, max=np.inf)
+        params.add('linear_intercept', value=0, min=-np.inf, max=np.inf)
+        params.add('linear_slope', value=0, min=-np.inf, max=np.inf)
         for i, prefix in enumerate(prefixes):
             if i != 0:
                 params.add(f'{prefix}amplitude', value=np.nanmax(spectrum),
@@ -211,7 +212,7 @@ class _Retrieval:
                            min=0, max=np.inf)
             if i == 0:
                 ind = center_indices[i]
-                dw = np.gradient(wavelengths)[ind] * target_radius
+                dw = np.gradient(wavelengths)[ind] * target_radius * 2
                 params.add(f'{prefix}center',
                            value=line_wavelengths[i],
                            min=line_wavelengths[i] - dw,
@@ -223,8 +224,8 @@ class _Retrieval:
                            expr=f'gaussian1_center + {dx}')
             sigma = (dwave[center_indices[i]] * target_radius /
                      np.sqrt(2 * np.log(2)))
-            params.add(f'{prefix}sigma', value=sigma, min=0.75*sigma,
-                       max=1.25*sigma)
+            params.add(f'{prefix}sigma', value=sigma, min=0.5*sigma,
+                       max=1.5*sigma)
         return model.fit(spectrum, params=params, x=wavelengths,
                          weights=1/spectrum_unc**2, method='least_squares')
 
@@ -472,12 +473,19 @@ class _Retrieval:
             line_wavelengths=wavelengths,
             line_strengths=line_ratios,
             target_radius=radius.value/data['headers'][0]['SPESCALE'])
+        intercept = fit.params['linear_intercept'].value
+        slope = fit.params['linear_slope'].value
         fitted_brightness = np.nansum(
-            (fit.best_fit - fit.params['constant_c'].value) * dwavelength)
+            (fit.best_fit -
+             (intercept + slope * data['wavelength_centers'].value)
+             ) * dwavelength)
         fitted_uncertainty = np.nansum(
             fit.eval_uncertainty(x=data['wavelength_centers'].value)
             * dwavelength)
-        observed_brightness = np.nansum((spectrum_1d * dwavelength)).value
+        observed_brightness = np.nansum(
+            (spectrum_1d.value -
+             (intercept + slope * data['wavelength_centers'].value)
+             ) * dwavelength)
         observed_uncertainty = np.sqrt(
             np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
 
@@ -557,12 +565,19 @@ class _Retrieval:
                 line_wavelengths=wavelengths,
                 line_strengths=line_ratios,
                 target_radius=radius.value/data['headers'][0]['SPESCALE'])
+            intercept = fit.params['linear_intercept'].value
+            slope = fit.params['linear_slope'].value
             fitted_brightness = np.nansum(
-                (fit.best_fit - fit.params['constant_c'].value) * dwavelength)
+                (fit.best_fit -
+                 (intercept + slope * data['wavelength_centers'].value)
+                 ) * dwavelength)
             fitted_uncertainty = np.nansum(
                 fit.eval_uncertainty(x=data['wavelength_centers'].value)
                 * dwavelength)
-            observed_brightness = np.nansum((spectrum_1d * dwavelength)).value
+            observed_brightness = np.nansum(
+                (spectrum_1d.value -
+                 (intercept + slope * data['wavelength_centers'].value)
+                 ) * dwavelength)
             observed_uncertainty = np.sqrt(
                 np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
 
