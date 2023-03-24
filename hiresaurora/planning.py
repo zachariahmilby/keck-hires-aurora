@@ -261,14 +261,16 @@ class EclipsePrediction:
     """
 
     def __init__(self, starting_datetime: str, ending_datetime: str,
-                 target: str, minimum_deltav: int | float = 12.6):
+                 target: str, minimum_deltav: int | float = 12.6,
+                 print_results: bool = True):
         self._target = target_info[target]['ID']
         self._target_name = target
         self._starting_datetime = starting_datetime
         self._ending_datetime = ending_datetime
         self._minimum_deltav = self._convert_deltav(minimum_deltav)
         self._eclipses = self._find_eclipses()
-        print(self._print_string())
+        if print_results:
+            print(self._print_string())
 
     def __str__(self):
         return self._print_string()
@@ -593,3 +595,7 @@ class EclipsePrediction:
             with open(target_to_guide_rates, 'w') as file:
                 for i in range(info['nlines']):
                     file.write(self.offset_rates(i, info))
+
+    @property
+    def ephemerides(self) -> list[dict]:
+        return self._eclipses
