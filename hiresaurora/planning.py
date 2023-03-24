@@ -257,7 +257,11 @@ class EclipsePrediction:
         set it to a default minimum of 12.6 km/s, which accounts for a shift of
         a single slit from the Earth airglow at 557.7 nm. However, I think an
         ideal shift might be more like 1.5 slit widths, in which case it should
-        be 19 km/s.
+        be 19 km/s. Note: these calculations are for the 1.722''-wide HIRES
+        slit.
+    print_results : bool
+        Whether or not you want to have the results of your search printed in
+        your terminal window.
     """
 
     def __init__(self, starting_datetime: str, ending_datetime: str,
