@@ -53,9 +53,9 @@ def _get_ephemerides(target: str, starting_datetime: str, ending_datetime: str,
 def _get_eclipse_indices(ephemeris: dict) -> np.ndarray:
     """
     Search through an ephemeris table and find when a satellite is eclipsed by
-    Jupiter and it's either night, astronomical or nautical twilight on Mauna
-    Kea.
+    Jupiter and it's either night or astronomical twilight on Maunakea.
     """
     return np.where((ephemeris['sat_vis'] == 'u') &
                     (ephemeris['solar_presence'] != 'C') &
+                    (ephemeris['solar_presence'] != 'N') &
                     (ephemeris['solar_presence'] != '*'))[0]
