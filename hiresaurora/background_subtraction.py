@@ -1,5 +1,6 @@
 import numpy as np
 import statsmodels.api as sm
+from scipy.ndimage import median_filter
 
 
 class _Background:
@@ -22,11 +23,12 @@ class _Background:
         fit_profile = sm.add_constant(self._slit_profile)
         n_spa, n_spe = self._data.shape
         background = np.zeros((n_spa, n_spe))
+        filtered_data = median_filter(self._data, size=(3, 3))
         for column in range(n_spe):
-            result = sm.WLS(
-                self._data[:, column] * self._mask[:, column], fit_profile,
-                weights=1/self._uncertainty[:, column]**2,
-                missing='drop').fit()
+            result = sm.WLS(filtered_data[:, column] * self._mask[:, column],
+                            fit_profile,
+                            weights=1/self._uncertainty[:, column]**2,
+                            missing='drop').fit()
             best_fit_constant = result.params[0]
             best_fit_profile = result.params[1] * self._slit_profile
             background[:, column] = best_fit_constant + best_fit_profile

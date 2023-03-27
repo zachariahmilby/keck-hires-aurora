@@ -13,6 +13,7 @@ from hirespipeline.files import make_directory
 from lmfit import Parameters
 from lmfit.model import ModelResult
 from lmfit.models import LinearModel, GaussianModel
+from scipy.ndimage import median_filter
 
 from hiresaurora.alignment import _TraceOffsets
 from hiresaurora.background_subtraction import _Background
@@ -133,7 +134,9 @@ class _Retrieval:
                 uncertainty.append(hdul['PRIMARY_UNC'].data[select])
                 bg_select = np.s_[order, trim_bottom:-trim_top, 256:-512]
                 background_profiles.append(
-                    self._get_slit_profile(hdul['PRIMARY'].data[bg_select]))
+                    self._get_slit_profile(
+                        median_filter(hdul['PRIMARY'].data[bg_select],
+                                      size=(3, 3))))
                 if wavelength_centers is None:
                     select = np.s_[order, left:right]
                     wavelength_centers = _doppler_shift_wavelengths(
@@ -401,6 +404,91 @@ class _Retrieval:
         plt.savefig(savename)
         plt.close(fig)
 
+    @staticmethod
+    def _fix_header_2d(header: fits.Header):
+        header['NAXIS1'] = (header['NAXIS1'], 'number of spectral bins')
+        header['NAXIS2'] = (header['NAXIS2'], 'number of spatial bins')
+
+    @staticmethod
+    def _fix_header_1d(header: fits.Header):
+        header['NAXIS1'] = (header['NAXIS1'], 'number of spectral bins')
+
+    # noinspection DuplicatedCode
+    def save_fits(self, header: dict, spectrum_2d: u.Quantity,
+                  unc_2d: u.Quantity, spectrum_1d: u.Quantity,
+                  unc_1d: u.Quantity, fit_1d: np.ndarray,
+                  fit_unc_1d: np.ndarray, wavelength_centers: u.Quantity,
+                  wavelength_edges: u.Quantity, line: str, trace_center: float,
+                  save_directory: Path, file_name: str):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=fits.verify.VerifyWarning)
+
+            # 2D spectrum
+            primary_hdu = fits.PrimaryHDU(spectrum_2d.value, header=header)
+            primary_hdu.header.set('BUNIT', f'{spectrum_2d.unit}',
+                                   'data physical units')
+            primary_hdu.header.set('LINE', f'{line}', 'targeted emission line',
+                                   after='OBJECT')
+            primary_hdu.header.set('TRC_CNTR', trace_center,
+                                   'guide satellite vertical pixel center',
+                                   after='LINE')
+            self._fix_header_2d(primary_hdu.header)
+
+            # 2D spectrum uncertinaty
+            primary_unc_hdu = fits.ImageHDU(unc_2d.value,
+                                            header=primary_hdu.header,
+                                            name='PRIMARY_UNC')
+            self._fix_header_2d(primary_unc_hdu.header)
+
+            # 1D spectrum
+            spec_1d_hdu = fits.ImageHDU(spectrum_1d.value, name='SPECTRUM_1D')
+            self._fix_header_1d(spec_1d_hdu.header)
+            spec_1d_hdu.header.append(('BUNIT', f'{spectrum_1d.unit}',
+                                       'data physical units'))
+
+            # 1D spectrum uncertainty
+            spec_1d_unc_hdu = fits.ImageHDU(unc_1d.value,
+                                            name='SPECTRUM_1D_UNC')
+            self._fix_header_1d(spec_1d_unc_hdu.header)
+            spec_1d_unc_hdu.header.append(('BUNIT', f'{unc_1d.unit}',
+                                           'data physical units'))
+
+            # Gaussian fit
+            fit_hdu = fits.ImageHDU(fit_1d.squeeze(), name='GAUSSIAN_FIT')
+            self._fix_header_1d(fit_hdu.header)
+            fit_hdu.header.append(('BUNIT', f'{spectrum_1d.unit}',
+                                   'data physical units'))
+
+            # Gaussian fit uncertainty
+            fit_unc_hdu = fits.ImageHDU(fit_unc_1d.squeeze(),
+                                        name='GAUSSIAN_FIT_UNC')
+            self._fix_header_1d(fit_unc_hdu.header)
+            fit_unc_hdu.header.append(('BUNIT', f'{unc_1d.unit}',
+                                       'data physical units'))
+
+            # wavelengths
+            wavelength_centers_hdu = fits.ImageHDU(
+                wavelength_centers.value, name='BIN_CENTER_WAVELENGTHS')
+            self._fix_header_1d(wavelength_centers_hdu.header)
+            wavelength_centers_hdu.header.append(('BUNIT',
+                                                  f'{wavelength_centers.unit}',
+                                                  'data physical units'))
+            wavelength_edges_hdu = fits.ImageHDU(wavelength_centers.value,
+                                                 name='BIN_EDGE_WAVELENGTHS')
+            self._fix_header_1d(wavelength_edges_hdu.header)
+            wavelength_edges_hdu.header.append(('BUNIT',
+                                                f'{wavelength_edges.unit}',
+                                                'data physical units'))
+
+            hdus = [primary_hdu, primary_unc_hdu, spec_1d_hdu, spec_1d_unc_hdu,
+                    fit_hdu, fit_unc_hdu, wavelength_centers_hdu,
+                    wavelength_edges_hdu]
+            hdul = fits.HDUList(hdus)
+            savename = Path(self._retrieval_data_directory, save_directory,
+                            'calibrated_data', file_name)
+            make_directory(savename.parent)
+            hdul.writeto(savename, overwrite=True)
+
     # noinspection DuplicatedCode
     def run_average(self, data: dict, wavelengths: u.Quantity, name: str,
                     trim_bottom: int, trim_top: int, seeing: float = 0.5,
@@ -416,11 +504,6 @@ class _Retrieval:
             reduced_data_directory=self._reduced_data_directory,
             wavelengths=wavelengths, order=data['order'],
             trim_bottom=trim_bottom, trim_top=trim_top)
-
-        # trace_offsets = _TraceOffsets(self._reduced_data_directory,
-        #                               order=data['order'],
-        #                               trim_bottom=trim_bottom,
-        #                               trim_top=trim_top)
 
         # average
         x, y, mask, edge = self._make_mask(
@@ -602,6 +685,23 @@ class _Retrieval:
                 observed_brightness, observed_uncertainty,
                 data['headers'][obs]['DATE-OBS']
             )
+
+            best_fit = fit.best_fit
+            best_fit_unc = fit.eval_uncertainty(
+                x=data['wavelength_centers'].value)
+            file_name = data['filenames'][obs].replace(
+                f'reduced.fits.gz', f'calibrated.fits.gz')
+            self.save_fits(header=data['headers'][obs],
+                           spectrum_2d=calibrated_data,
+                           unc_2d=calibrated_unc,
+                           spectrum_1d=spectrum_1d,
+                           unc_1d=spectrum_1d_unc,
+                           fit_1d=best_fit, fit_unc_1d=best_fit_unc,
+                           wavelength_centers=data['wavelength_centers'],
+                           wavelength_edges=data['wavelength_edges'],
+                           line=name, trace_center=trace_offsets.centers[obs],
+                           save_directory=Path(save_directory),
+                           file_name=file_name)
 
     def run_all(self, extended: bool = False, trim_bottom: int = 2,
                 trim_top: int = 2, horizontal_offset: int = 0,
