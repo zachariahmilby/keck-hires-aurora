@@ -493,6 +493,7 @@ class _Retrieval:
                             'calibrated_data', file_name)
             make_directory(savename.parent)
             hdul.writeto(savename, overwrite=True)
+            hdul.close()
 
     # noinspection DuplicatedCode
     def run_average(self, data: dict, wavelengths: u.Quantity, name: str,
