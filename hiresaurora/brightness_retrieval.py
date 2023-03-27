@@ -84,7 +84,8 @@ class _Retrieval:
 
     def _get_data(self, wavelengths: u.Quantity,
                   trim_bottom: int, trim_top: int, horizontal_offset: int,
-                  dwavelength: u.Quantity = 0.1 * u.nm) -> dict:
+                  dwavelength: u.Quantity = 0.1 * u.nm,
+                  seeing: float = 1/2) -> dict:
         """
         Get data, uncertainty, headers and wavelengths from the order which
         contains a user-supplied wavelength. Selects data from ± 0.1 nm around
@@ -133,10 +134,14 @@ class _Retrieval:
                 data.append(hdul['PRIMARY'].data[select])
                 uncertainty.append(hdul['PRIMARY_UNC'].data[select])
                 bg_select = np.s_[order, trim_bottom:-trim_top, 256:-512]
+                bg_data = hdul['PRIMARY'].data[bg_select]
+                _, _, mask, _ = self._make_mask(
+                    shape=bg_data.shape, header=headers[-1], seeing=seeing,
+                    locs=locs, vertical_position=None)
                 background_profiles.append(
                     self._get_slit_profile(
-                        median_filter(hdul['PRIMARY'].data[bg_select],
-                                      size=(3, 3))))
+                        median_filter(bg_data * mask, size=(3, 3))
+                    ))
                 if wavelength_centers is None:
                     select = np.s_[order, left:right]
                     wavelength_centers = _doppler_shift_wavelengths(
@@ -512,8 +517,6 @@ class _Retrieval:
             vertical_position=None)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            # average_data, average_unc = trace_offsets.align_and_average(
-            #     data['data'], data['uncertainty'])
             average_data = np.nanmean(data['data'], axis=0)
             average_unc = np.sqrt(
                 np.nansum(data['uncertainty'] ** 2, axis=0)) / n_obs
@@ -719,7 +722,8 @@ class _Retrieval:
                 data = self._get_data(wavelengths=wavelength,
                                       trim_bottom=trim_bottom,
                                       trim_top=trim_top,
-                                      horizontal_offset=horizontal_offset)
+                                      horizontal_offset=horizontal_offset,
+                                      seeing=seeing)
             except WavelengthNotFoundError:
                 print(f'{name} not found in available orders, skipping...')
                 continue
@@ -763,3 +767,7 @@ def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
     retrieval.run_all(extended=extended, trim_bottom=trim_bottom,
                       trim_top=trim_top, horizontal_offset=horizontal_offset,
                       seeing=seeing)
+
+if __name__ == "__main__":
+    run_retrieval(reduced_data_directory='/Users/zachariahmilby/Documents/School/Planetary Sciences PhD/Projects/Galilean Satellite Aurora (Katherine de Kleer)/HIRES/Data/Ganymede 2021-06-08/reduced',
+                  extended=False, trim_bottom=2, trim_top=4, seeing=4 / 5)
