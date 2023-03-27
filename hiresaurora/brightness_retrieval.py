@@ -708,7 +708,7 @@ class _Retrieval:
 
     def run_all(self, extended: bool = False, trim_bottom: int = 2,
                 trim_top: int = 2, horizontal_offset: int = 0,
-                seeing: float = 1/2):
+                seeing: float = 1/2, test: bool = False):
         """
         Wrapper to retrieve both the average and individual aurora
         brightnesses.
@@ -718,6 +718,9 @@ class _Retrieval:
         names = aurora_line_names(extended=extended)
         for wavelength, line_strength, name in zip(wavelengths, line_strengths,
                                                    names):
+            if test:
+                if wavelength.mean() != 630.0304 * u.nm:
+                    continue
             try:
                 data = self._get_data(wavelengths=wavelength,
                                       trim_bottom=trim_bottom,
@@ -728,21 +731,27 @@ class _Retrieval:
                 print(f'{name} not found in available orders, skipping...')
                 continue
             print(f'Retrieving {name} brightnesses...')
-            self.run_average(data=data, wavelengths=wavelength,
-                             name=name, line_ratios=line_strength,
-                             trim_bottom=trim_bottom, trim_top=trim_top,
-                             seeing=seeing)
-            self.run_individual(data=data, wavelengths=wavelength,
-                                name=name, line_ratios=line_strength,
-                                trim_bottom=trim_bottom,
-                                trim_top=trim_top,
-                                seeing=seeing)
+            if test:
+                self.run_average(data=data, wavelengths=wavelength,
+                                 name=name, line_ratios=line_strength,
+                                 trim_bottom=trim_bottom, trim_top=trim_top,
+                                 seeing=seeing)
+            else:
+                self.run_average(data=data, wavelengths=wavelength,
+                                 name=name, line_ratios=line_strength,
+                                 trim_bottom=trim_bottom, trim_top=trim_top,
+                                 seeing=seeing)
+                self.run_individual(data=data, wavelengths=wavelength,
+                                    name=name, line_ratios=line_strength,
+                                    trim_bottom=trim_bottom,
+                                    trim_top=trim_top,
+                                    seeing=seeing)
 
 
 def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
                   trim_bottom: int = 2, trim_top: int = 2,
                   horizontal_offset: int = 0,
-                  seeing: float = 1.):
+                  seeing: float = 1.0, test: bool = False):
     """
     Wrapper function to run brightness retrievals on a set of reduced
     observations.
@@ -762,8 +771,11 @@ def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
     seeing : float
         Atmospheric seeing, use as a proxy to increase the aperture from which
         the retrieval occurs.
+    test : bool
+        If you want to test your settings without running the entire dataset,
+        this will run only the average for just 630.0 nm.
     """
     retrieval = _Retrieval(reduced_data_directory=reduced_data_directory)
     retrieval.run_all(extended=extended, trim_bottom=trim_bottom,
                       trim_top=trim_top, horizontal_offset=horizontal_offset,
-                      seeing=seeing)
+                      seeing=seeing, test=test)
