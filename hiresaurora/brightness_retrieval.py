@@ -767,7 +767,3 @@ def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
     retrieval.run_all(extended=extended, trim_bottom=trim_bottom,
                       trim_top=trim_top, horizontal_offset=horizontal_offset,
                       seeing=seeing)
-
-if __name__ == "__main__":
-    run_retrieval(reduced_data_directory='/Users/zachariahmilby/Documents/School/Planetary Sciences PhD/Projects/Galilean Satellite Aurora (Katherine de Kleer)/HIRES/Data/Ganymede 2021-06-08/reduced',
-                  extended=False, trim_bottom=2, trim_top=4, seeing=4 / 5)
