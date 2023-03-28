@@ -553,44 +553,47 @@ class _Retrieval:
         spectrum_1d_unc = np.sqrt(np.sum(calibrated_unc[ind] ** 2, axis=0))
         dwavelength = np.gradient(data['wavelength_centers'].value)
 
-        fit = self._fit_gaussian(
-            wavelengths=data['wavelength_centers'].value,
-            spectrum=spectrum_1d.value,
-            spectrum_unc=spectrum_1d_unc.value,
-            line_wavelengths=wavelengths,
-            line_strengths=line_ratios,
-            target_radius=radius.value/data['headers'][0]['SPESCALE'])
-        intercept = fit.params['linear_intercept'].value
-        slope = fit.params['linear_slope'].value
-        fitted_brightness = np.nansum(
-            (fit.best_fit -
-             (intercept + slope * data['wavelength_centers'].value)
-             ) * dwavelength)
-        fitted_uncertainty = np.nansum(
-            fit.eval_uncertainty(x=data['wavelength_centers'].value)
-            * dwavelength)
-        observed_brightness = np.nansum(
-            (spectrum_1d.value -
-             (intercept + slope * data['wavelength_centers'].value)
-             ) * dwavelength)
-        observed_uncertainty = np.sqrt(
-            np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
+        try:
+            fit = self._fit_gaussian(
+                wavelengths=data['wavelength_centers'].value,
+                spectrum=spectrum_1d.value,
+                spectrum_unc=spectrum_1d_unc.value,
+                line_wavelengths=wavelengths,
+                line_strengths=line_ratios,
+                target_radius=radius.value/data['headers'][0]['SPESCALE'])
+            intercept = fit.params['linear_intercept'].value
+            slope = fit.params['linear_slope'].value
+            fitted_brightness = np.nansum(
+                (fit.best_fit -
+                 (intercept + slope * data['wavelength_centers'].value)
+                 ) * dwavelength)
+            fitted_uncertainty = np.nansum(
+                fit.eval_uncertainty(x=data['wavelength_centers'].value)
+                * dwavelength)
+            observed_brightness = np.nansum(
+                (spectrum_1d.value -
+                 (intercept + slope * data['wavelength_centers'].value)
+                 ) * dwavelength)
+            observed_uncertainty = np.sqrt(
+                np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
 
-        # convert to appropriate significant figures
-        fitted_brightness, fitted_uncertainty = format_uncertainty(
-            fitted_brightness, fitted_uncertainty)
-        observed_brightness, observed_uncertainty = format_uncertainty(
-            observed_brightness, observed_uncertainty)
+            # convert to appropriate significant figures
+            fitted_brightness, fitted_uncertainty = format_uncertainty(
+                fitted_brightness, fitted_uncertainty)
+            observed_brightness, observed_uncertainty = format_uncertainty(
+                observed_brightness, observed_uncertainty)
 
-        self._qa_graphic_1d(
-            data['wavelength_centers'], spectrum_1d, spectrum_1d_unc, fit,
-            fitted_brightness, fitted_uncertainty, observed_brightness,
-            observed_uncertainty,
-            f'{save_directory}/spectra_1d', 'average.jpg')
+            self._qa_graphic_1d(
+                data['wavelength_centers'], spectrum_1d, spectrum_1d_unc, fit,
+                fitted_brightness, fitted_uncertainty, observed_brightness,
+                observed_uncertainty,
+                f'{save_directory}/spectra_1d', 'average.jpg')
 
-        self._save_average_results(
-            save_directory, fitted_brightness, fitted_uncertainty,
-            observed_brightness, observed_uncertainty)
+            self._save_average_results(
+                save_directory, fitted_brightness, fitted_uncertainty,
+                observed_brightness, observed_uncertainty)
+        except ValueError:
+            print('Unable to retrieve brightness, skipping...')
 
     # noinspection DuplicatedCode
     def run_individual(self, data: dict, wavelengths: u.Quantity, name: str,
@@ -645,67 +648,73 @@ class _Retrieval:
             spectrum_1d_unc = np.sqrt(np.sum(calibrated_unc[ind] ** 2, axis=0))
             dwavelength = np.gradient(data['wavelength_centers'].value)
 
-            fit = self._fit_gaussian(
-                wavelengths=data['wavelength_centers'].value,
-                spectrum=spectrum_1d.value,
-                spectrum_unc=spectrum_1d_unc.value,
-                line_wavelengths=wavelengths,
-                line_strengths=line_ratios,
-                target_radius=radius.value/data['headers'][0]['SPESCALE'])
-            intercept = fit.params['linear_intercept'].value
-            slope = fit.params['linear_slope'].value
-            fitted_brightness = np.nansum(
-                (fit.best_fit -
-                 (intercept + slope * data['wavelength_centers'].value)
-                 ) * dwavelength)
-            fitted_uncertainty = np.nansum(
-                fit.eval_uncertainty(x=data['wavelength_centers'].value)
-                * dwavelength)
-            observed_brightness = np.nansum(
-                (spectrum_1d.value -
-                 (intercept + slope * data['wavelength_centers'].value)
-                 ) * dwavelength)
-            observed_uncertainty = np.sqrt(
-                np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
+            try:
+                fit = self._fit_gaussian(
+                    wavelengths=data['wavelength_centers'].value,
+                    spectrum=spectrum_1d.value,
+                    spectrum_unc=spectrum_1d_unc.value,
+                    line_wavelengths=wavelengths,
+                    line_strengths=line_ratios,
+                    target_radius=radius.value/data['headers'][0]['SPESCALE'])
+                intercept = fit.params['linear_intercept'].value
+                slope = fit.params['linear_slope'].value
+                fitted_brightness = np.nansum(
+                    (fit.best_fit -
+                     (intercept + slope * data['wavelength_centers'].value)
+                     ) * dwavelength)
+                fitted_uncertainty = np.nansum(
+                    fit.eval_uncertainty(x=data['wavelength_centers'].value)
+                    * dwavelength)
+                observed_brightness = np.nansum(
+                    (spectrum_1d.value -
+                     (intercept + slope * data['wavelength_centers'].value)
+                     ) * dwavelength)
+                observed_uncertainty = np.sqrt(
+                    np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
 
-            # convert to appropriate significant figures
-            fitted_brightness, fitted_uncertainty = format_uncertainty(
-                fitted_brightness, fitted_uncertainty)
-            observed_brightness, observed_uncertainty = format_uncertainty(
-                observed_brightness, observed_uncertainty)
+                # convert to appropriate significant figures
+                fitted_brightness, fitted_uncertainty = format_uncertainty(
+                    fitted_brightness, fitted_uncertainty)
+                observed_brightness, observed_uncertainty = format_uncertainty(
+                    observed_brightness, observed_uncertainty)
 
-            self._qa_graphic_2d(x, y, calibrated_data, calibrated_unc, edge,
-                                data['headers'][0]['spescale'],
-                                data['headers'][0]['spascale'],
-                                f'{save_directory}/spectra_2d', filename)
+                self._qa_graphic_2d(x, y, calibrated_data, calibrated_unc,
+                                    edge,
+                                    data['headers'][0]['spescale'],
+                                    data['headers'][0]['spascale'],
+                                    f'{save_directory}/spectra_2d', filename)
 
-            self._qa_graphic_1d(
-                data['wavelength_centers'], spectrum_1d, spectrum_1d_unc, fit,
-                fitted_brightness, fitted_uncertainty, observed_brightness,
-                observed_uncertainty, f'{save_directory}/spectra_1d', filename)
+                self._qa_graphic_1d(
+                    data['wavelength_centers'], spectrum_1d, spectrum_1d_unc,
+                    fit, fitted_brightness, fitted_uncertainty,
+                    observed_brightness, observed_uncertainty,
+                    f'{save_directory}/spectra_1d', filename)
 
-            self._save_individual_results(
-                save_directory, fitted_brightness, fitted_uncertainty,
-                observed_brightness, observed_uncertainty,
-                data['headers'][obs]['DATE-OBS']
-            )
+                self._save_individual_results(
+                    save_directory, fitted_brightness, fitted_uncertainty,
+                    observed_brightness, observed_uncertainty,
+                    data['headers'][obs]['DATE-OBS']
+                )
 
-            best_fit = fit.best_fit
-            best_fit_unc = fit.eval_uncertainty(
-                x=data['wavelength_centers'].value)
-            file_name = data['filenames'][obs].replace(
-                f'reduced.fits.gz', f'calibrated.fits.gz')
-            self.save_fits(header=data['headers'][obs],
-                           spectrum_2d=calibrated_data,
-                           unc_2d=calibrated_unc,
-                           spectrum_1d=spectrum_1d,
-                           unc_1d=spectrum_1d_unc,
-                           fit_1d=best_fit, fit_unc_1d=best_fit_unc,
-                           wavelength_centers=data['wavelength_centers'],
-                           wavelength_edges=data['wavelength_edges'],
-                           line=name, trace_center=trace_offsets.centers[obs],
-                           save_directory=Path(save_directory),
-                           file_name=file_name)
+                best_fit = fit.best_fit
+                best_fit_unc = fit.eval_uncertainty(
+                    x=data['wavelength_centers'].value)
+                file_name = data['filenames'][obs].replace(
+                    f'reduced.fits.gz', f'calibrated.fits.gz')
+                self.save_fits(header=data['headers'][obs],
+                               spectrum_2d=calibrated_data,
+                               unc_2d=calibrated_unc,
+                               spectrum_1d=spectrum_1d,
+                               unc_1d=spectrum_1d_unc,
+                               fit_1d=best_fit, fit_unc_1d=best_fit_unc,
+                               wavelength_centers=data['wavelength_centers'],
+                               wavelength_edges=data['wavelength_edges'],
+                               line=name,
+                               trace_center=trace_offsets.centers[obs],
+                               save_directory=Path(save_directory),
+                               file_name=file_name)
+            except ValueError:
+                print('Unable to retrieve brightness, skipping...')
 
     def run_all(self, extended: bool = False, trim_bottom: int = 2,
                 trim_top: int = 2, horizontal_offset: int = 0,
