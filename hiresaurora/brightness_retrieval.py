@@ -334,7 +334,7 @@ class _Retrieval:
         height += 4 * dunit
         width += 6 * dunit
         fig, axes = plt.subplots(2, 2, figsize=(width, height),
-                                 constrained_layout=True)
+                                 constrained_layout=True, clear=True)
         [ax.set_xticks([]) for ax in axes.ravel()]
         [ax.set_yticks([]) for ax in axes.ravel()]
         norm = colors.Normalize(
@@ -381,7 +381,8 @@ class _Retrieval:
         Make a quality-assurance graphic for the 1D spectra. Shows the observed
         data and the Gaussian fit with uncertainty.
         """
-        fig, axis = plt.subplots(1, figsize=(4.5, 2), constrained_layout=True)
+        fig, axis = plt.subplots(1, figsize=(4.5, 2), constrained_layout=True,
+                                 clear=True)
         axis.xaxis.set_major_locator(ticker.MultipleLocator(0.1))
         axis.xaxis.set_minor_locator(ticker.MultipleLocator(0.01))
         axis.set_xlabel('Wavelength [nm]')
