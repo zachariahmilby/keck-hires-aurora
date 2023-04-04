@@ -419,6 +419,14 @@ class _Retrieval:
     def _fix_header_1d(header: fits.Header):
         header['NAXIS1'] = (header['NAXIS1'], 'number of spectral bins')
 
+    def _save_fit_results(self, result: ModelResult, save_directory: str,
+                          file_name: str):
+        savename = Path(self._retrieval_data_directory, save_directory,
+                        file_name)
+        make_directory(savename.parent)
+        with open(savename, 'w') as file:
+            file.write(result.fit_report())
+
     # noinspection DuplicatedCode
     def save_fits(self, header: dict, spectrum_2d: u.Quantity,
                   unc_2d: u.Quantity, spectrum_1d: u.Quantity,
@@ -593,6 +601,9 @@ class _Retrieval:
             self._save_average_results(
                 save_directory, fitted_brightness, fitted_uncertainty,
                 observed_brightness, observed_uncertainty)
+
+            self._save_fit_results(fit, f'{save_directory}/spectra_1d',
+                                   'average.txt')
         except ValueError:
             print('Unable to retrieve brightness, skipping...')
 
@@ -696,6 +707,9 @@ class _Retrieval:
                     observed_brightness, observed_uncertainty,
                     data['headers'][obs]['DATE-OBS']
                 )
+
+                self._save_fit_results(fit, f'{save_directory}/spectra_1d',
+                                       filename.replace('jpg', 'txt'))
 
                 best_fit = fit.best_fit
                 best_fit_unc = fit.eval_uncertainty(
