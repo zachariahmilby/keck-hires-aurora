@@ -180,8 +180,8 @@ class _Retrieval:
     @staticmethod
     def _fit_gaussian(wavelengths: np.ndarray, spectrum: np.ndarray,
                       spectrum_unc: np.ndarray, line_wavelengths: [u.Quantity],
-                      line_strengths: [float], target_radius: float
-                      ) -> ModelResult:
+                      line_strengths: [float], target_radius: float,
+                      fit_sigma: float = None) -> ModelResult:
         """
         Make a (composite) Gaussian equal to the number of lines in the set and
         fit it. I've added a constant to account for any residual left over
@@ -225,9 +225,10 @@ class _Retrieval:
                       - line_wavelengths[0])
                 params.add(f'{prefix}center', vary=False,
                            expr=f'gaussian1_center + {dx}')
-            sigma = (dwave[center_indices[i]] * target_radius /
-                     (2 * np.log(2)))
-            params.add(f'{prefix}sigma', value=sigma, vary=False)
+            if fit_sigma is None:
+                fit_sigma = (dwave[center_indices[i]] * target_radius /
+                             (2 * np.log(2)))
+            params.add(f'{prefix}sigma', value=fit_sigma, vary=False)
         return model.fit(spectrum, params=params, x=wavelengths,
                          weights=1/spectrum_unc**2, method='least_squares')
 
@@ -499,9 +500,68 @@ class _Retrieval:
             hdul.close()
 
     # noinspection DuplicatedCode
+    def _get_fit_radius(self, data: dict, wavelengths: u.Quantity,
+                        trim_bottom: int, trim_top: int, seeing: float = 0.5,
+                        line_ratios: [float] = None):
+        """
+        Get the sigma for the fit by first running the average of 630.0 nm.
+        """
+        n_obs, n_spa, n_spe = data['data'].shape
+        calibration = _FluxCalibration(
+            reduced_data_directory=self._reduced_data_directory,
+            wavelengths=wavelengths, order=data['order'],
+            trim_bottom=trim_bottom, trim_top=trim_top)
+
+        x, y, mask, edge = self._make_mask(
+            shape=(n_spa, n_spe), header=data['headers'][0],
+            seeing=seeing, locs=data['feature_locations'],
+            vertical_position=None)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            average_data = np.nanmean(data['data'], axis=0)
+            average_unc = np.sqrt(
+                np.nansum(data['uncertainty'] ** 2, axis=0)) / n_obs
+            average_slit_profile = np.nanmean(
+                data['background_profiles'], axis=0)
+            average_slit_profile /= np.nanmax(average_slit_profile)
+            background = _Background(average_data, average_unc, mask,
+                                     average_slit_profile)
+            bgsub_data = average_data - background.background
+
+        # calibrate data
+        radius = self._get_target_radius(data['headers'][0])
+        area = (np.pi * radius ** 2).to(u.sr)
+        bgsub_data = bgsub_data * u.electron / u.s / area
+        bgsub_unc = average_unc * u.electron / u.s / area
+        calibrated_data = bgsub_data / calibration.calibration_factors
+
+        # calculate calibrated uncertainty
+        data_nsr = bgsub_unc / bgsub_data
+        calibration_nsr = (calibration.calibration_factors_unc /
+                           calibration.calibration_factors)
+        calibrated_unc = np.abs(calibrated_data) * np.sqrt(
+            data_nsr ** 2 + calibration_nsr ** 2)
+
+        # calculate 1D spectrum
+        ind = np.where(np.isnan(np.mean(mask, axis=1)))[0]
+        spectrum_1d = np.nansum(calibrated_data[ind], axis=0)
+        spectrum_1d_unc = np.sqrt(np.sum(calibrated_unc[ind] ** 2, axis=0))
+
+        fit = self._fit_gaussian(
+            wavelengths=data['wavelength_centers'].value,
+            spectrum=spectrum_1d.value,
+            spectrum_unc=spectrum_1d_unc.value,
+            line_wavelengths=wavelengths,
+            line_strengths=line_ratios,
+            target_radius=radius.value / data['headers'][0]['SPESCALE'],
+            fit_sigma=None)
+
+        return fit.params['gaussian1_sigma'].value
+
+    # noinspection DuplicatedCode
     def run_average(self, data: dict, wavelengths: u.Quantity, name: str,
-                    trim_bottom: int, trim_top: int, seeing: float = 0.5,
-                    line_ratios: [float] = None):
+                    trim_bottom: int, trim_top: int, fit_radius: float,
+                    seeing: float = 0.5, line_ratios: [float] = None):
         """
         Retrieve the brightness of the average across the data frames. For now
         the average does not align using the trace because of edge effects. I
@@ -563,7 +623,8 @@ class _Retrieval:
                 spectrum_unc=spectrum_1d_unc.value,
                 line_wavelengths=wavelengths,
                 line_strengths=line_ratios,
-                target_radius=radius.value/data['headers'][0]['SPESCALE'])
+                target_radius=radius.value/data['headers'][0]['SPESCALE'],
+                fit_sigma=fit_radius)
             intercept = fit.params['linear_intercept'].value
             slope = fit.params['linear_slope'].value
             fitted_brightness = np.nansum(
@@ -603,8 +664,8 @@ class _Retrieval:
 
     # noinspection DuplicatedCode
     def run_individual(self, data: dict, wavelengths: u.Quantity, name: str,
-                       trim_bottom: int, trim_top: int, seeing: float = 1.,
-                       line_ratios: [float] = None):
+                       trim_bottom: int, trim_top: int, fit_radius: float,
+                       seeing: float = 1., line_ratios: [float] = None):
         """
         Retrieve the brightness of an individual data frame. Unlike the average
         retrieval, this does use the trace alignment.
@@ -661,7 +722,8 @@ class _Retrieval:
                     spectrum_unc=spectrum_1d_unc.value,
                     line_wavelengths=wavelengths,
                     line_strengths=line_ratios,
-                    target_radius=radius.value/data['headers'][0]['SPESCALE'])
+                    target_radius=radius.value/data['headers'][0]['SPESCALE'],
+                    fit_sigma=fit_radius)
                 intercept = fit.params['linear_intercept'].value
                 slope = fit.params['linear_slope'].value
                 fitted_brightness = np.nansum(
@@ -735,6 +797,17 @@ class _Retrieval:
         wavelengths = aurora_line_wavelengths(extended=extended)
         line_strengths = emission_line_strengths(extended=extended)
         names = aurora_line_names(extended=extended)
+
+        # get fitting radius
+        data = self._get_data(wavelengths=[630.0304]*u.nm,
+                              trim_bottom=trim_bottom,
+                              trim_top=trim_top,
+                              horizontal_offset=horizontal_offset)
+        fit_radius = self._get_fit_radius(data, wavelengths=[630.0304]*u.nm,
+                                          line_ratios=[1],
+                                          trim_bottom=trim_bottom,
+                                          trim_top=trim_top, seeing=seeing)
+
         for wavelength, line_strength, name in zip(wavelengths, line_strengths,
                                                    names):
             if test:
@@ -753,17 +826,17 @@ class _Retrieval:
                 self.run_average(data=data, wavelengths=wavelength,
                                  name=name, line_ratios=line_strength,
                                  trim_bottom=trim_bottom, trim_top=trim_top,
-                                 seeing=seeing)
+                                 seeing=seeing, fit_radius=fit_radius)
             else:
                 self.run_average(data=data, wavelengths=wavelength,
                                  name=name, line_ratios=line_strength,
                                  trim_bottom=trim_bottom, trim_top=trim_top,
-                                 seeing=seeing)
+                                 seeing=seeing, fit_radius=fit_radius)
                 self.run_individual(data=data, wavelengths=wavelength,
                                     name=name, line_ratios=line_strength,
                                     trim_bottom=trim_bottom,
                                     trim_top=trim_top,
-                                    seeing=seeing)
+                                    seeing=seeing, fit_radius=fit_radius)
 
 
 def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
