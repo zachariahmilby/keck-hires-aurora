@@ -1,5 +1,5 @@
 import numpy as np
-import statsmodels.api as sm
+from lmfit.models import Model
 from scipy.ndimage import median_filter
 from astropy.convolution import convolve, Gaussian1DKernel
 
@@ -21,12 +21,15 @@ class _Background:
         return convolve(background_profile, Gaussian1DKernel(stddev=1),
                         boundary='extend')
 
+    @staticmethod
+    def _fitting_model(profile, constant, coefficient):
+        return constant + coefficient * profile
+
     def _fit_background(self) -> np.ndarray:
         """
         Fit the normalized background profile to each column to produce a
         characteristic background for a supplied order.
         """
-        fit_profile = sm.add_constant(self._slit_profile)
         n_spa, n_spe = self._data.shape
         background = np.zeros((n_spa, n_spe))
         filtered_data = median_filter(self._data, size=(3, 3))
@@ -34,11 +37,16 @@ class _Background:
             data = filtered_data[:, column] * self._mask[:, column]
             weights = 1 / self._uncertainty[:, column] ** 2
             try:
-                result = sm.WLS(data, fit_profile, weights=weights,
-                                missing='drop').fit()
-                best_fit_constant = result.params[0]
-                best_fit_profile = result.params[1] * self._slit_profile
-                background[:, column] = best_fit_constant + best_fit_profile
+                good = np.where(~np.isnan(data))
+                model = Model(self._fitting_model,
+                              independent_vars=['profile'],
+                              an_policy='omit')
+                params = model.make_params(constant=np.nanmin(data),
+                                           coefficient=np.nanmean(data))
+                fit = model.fit(data[good], params=params,
+                                weights=weights[good],
+                                profile=self._slit_profile[good])
+                background[:, column] = fit.eval(profile=self._slit_profile)
             except np.linalg.LinAlgError:
                 continue
 
