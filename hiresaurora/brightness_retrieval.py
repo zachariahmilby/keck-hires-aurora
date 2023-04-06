@@ -180,13 +180,13 @@ class _Retrieval:
     @staticmethod
     def _fit_gaussian(wavelengths: np.ndarray, spectrum: np.ndarray,
                       spectrum_unc: np.ndarray, line_wavelengths: [u.Quantity],
-                      line_strengths: [float], target_radius: float) \
-            -> ModelResult:
+                      line_strengths: [float], target_radius: float
+                      ) -> ModelResult:
         """
         Make a (composite) Gaussian equal to the number of lines in the set and
         fit it. I've added a constant to account for any residual left over
         after background subtraction. I've also fixed the width of each of the
-        Gaussians to radius/sqrt(2*ln(2)), under the assumption that the target
+        Gaussians to radius/(2*ln(2)), under the assumption that the target
         radius is the HWHM of the Gaussian.
 
         Update June 22, 2022: I've added specific line ratios for the component
@@ -226,9 +226,8 @@ class _Retrieval:
                 params.add(f'{prefix}center', vary=False,
                            expr=f'gaussian1_center + {dx}')
             sigma = (dwave[center_indices[i]] * target_radius /
-                     np.sqrt(2 * np.log(2)))
-            params.add(f'{prefix}sigma', value=sigma, min=0.5*sigma,
-                       max=1.5*sigma)
+                     (2 * np.log(2)))
+            params.add(f'{prefix}sigma', value=sigma, vary=False)
         return model.fit(spectrum, params=params, x=wavelengths,
                          weights=1/spectrum_unc**2, method='least_squares')
 
