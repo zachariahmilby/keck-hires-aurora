@@ -49,10 +49,10 @@ emission_lines = {
                                     strengths=[1.]),
     'O I 777.4 nm': _EmissionLine(
         wavelengths=[777.1944, 777.4166, 777.5388] * u.nm,
-        strengths=[1., 27/29, 25/29]),
+        strengths=[1., 5/6, 5/6]),
     'O I 844.6 nm': _EmissionLine(
         wavelengths=[844.6247, 844.6359, 844.6758] * u.nm,
-        strengths=[1., 100/81, 187/162]),
+        strengths=[5/6, 1., 1.]),
     'H I 656.3 nm': _EmissionLine(wavelengths=[656.2852] * u.nm,
                                   strengths=[1.]),
     'Na I 589.3 nm': _EmissionLine(wavelengths=[588.9950, 589.5924] * u.nm,
