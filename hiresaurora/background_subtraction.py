@@ -4,6 +4,10 @@ from scipy.ndimage import median_filter
 from astropy.convolution import convolve, Gaussian1DKernel
 
 
+class BackgroundFitError(Exception):
+    pass
+
+
 class _Background:
     """
     Fit a background profile to each column.
@@ -48,27 +52,43 @@ class _Background:
                                 weights=weights[good],
                                 profile=self._slit_profile[good])
                 background[:, column] = fit.eval(profile=self._slit_profile)
-            except np.linalg.LinAlgError:
-                continue
+            except ValueError:
+                raise BackgroundFitError()
 
         return background
 
+    # noinspection DuplicatedCode
     def _fit_secondary_background(self):
         """
-        Fit a linear background along each row to remove any lingering
-        systematic effects remaining from rectification.
+        Fit a linear background along each row and columnto remove any
+        lingering systematic effects remaining from rectification.
         """
-        secondary_backround = np.zeros_like(self._primary_background)
+        secondary_background_horizontal = np.zeros_like(
+            self._primary_background)
+        secondary_background_vertical = np.zeros_like(self._primary_background)
         bgsub_data = self._data - self._primary_background
         model = LinearModel()
         x = np.arange(bgsub_data.shape[1])
         for row in range(bgsub_data.shape[0]):
             data = bgsub_data[row] * self._mask[row]
-            good = np.where(~np.isnan(data))
-            params = model.guess(data[good], x=x[good])
-            fit = model.fit(data[good], params, x=x[good])
-            secondary_backround[row] = fit.eval(x=x)
-        return secondary_backround
+            try:
+                good = np.where(~np.isnan(data))
+                params = model.guess(data[good], x=x[good])
+                fit = model.fit(data[good], params, x=x[good])
+                secondary_background_horizontal[row] = fit.eval(x=x)
+            except TypeError:
+                raise BackgroundFitError()
+        y = np.arange(bgsub_data.shape[0])
+        for column in range(bgsub_data.shape[1]):
+            data = bgsub_data[:, column] * self._mask[:, column]
+            try:
+                good = np.where(~np.isnan(data))
+                params = model.guess(data[good], x=y[good])
+                fit = model.fit(data[good], params, x=y[good])
+                secondary_background_vertical[:, column] = fit.eval(x=y)
+            except TypeError:
+                raise BackgroundFitError()
+        return secondary_background_horizontal + secondary_background_vertical
 
     @property
     def background(self) -> np.ndarray:

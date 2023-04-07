@@ -16,7 +16,7 @@ from lmfit.models import ConstantModel, GaussianModel
 from scipy.ndimage import median_filter
 
 from hiresaurora.alignment import _TraceOffsets
-from hiresaurora.background_subtraction import _Background
+from hiresaurora.background_subtraction import _Background, BackgroundFitError
 from hiresaurora.calibration import _FluxCalibration
 from hiresaurora.ephemeris import _get_ephemeris
 from hiresaurora.general import _doppler_shift_wavelengths, rcparams, \
@@ -656,7 +656,8 @@ class _Retrieval:
             self._save_fit_results(fit, f'{save_directory}/spectra_1d',
                                    'average.txt')
         except ValueError:
-            print('Unable to retrieve brightness, skipping...')
+            print(f'Unable to retrieve {wavelengths.mean()} brightness, '
+                  f'skipping...')
 
     # noinspection DuplicatedCode
     def run_individual(self, data: dict, wavelengths: u.Quantity, name: str,
@@ -813,21 +814,28 @@ class _Retrieval:
                 print(f'{name} not found in available orders, skipping...')
                 continue
             print(f'Retrieving {name} brightnesses...')
-            if test:
-                self.run_average(data=data, wavelengths=wavelength,
-                                 name=name, line_ratios=line_strength,
-                                 trim_bottom=trim_bottom, trim_top=trim_top,
-                                 seeing=seeing, fit_radius=fit_radius)
-            else:
-                self.run_average(data=data, wavelengths=wavelength,
-                                 name=name, line_ratios=line_strength,
-                                 trim_bottom=trim_bottom, trim_top=trim_top,
-                                 seeing=seeing, fit_radius=fit_radius)
-                self.run_individual(data=data, wavelengths=wavelength,
-                                    name=name, line_ratios=line_strength,
-                                    trim_bottom=trim_bottom,
-                                    trim_top=trim_top,
-                                    seeing=seeing, fit_radius=fit_radius)
+            try:
+                if test:
+                    self.run_average(data=data, wavelengths=wavelength,
+                                     name=name, line_ratios=line_strength,
+                                     trim_bottom=trim_bottom,
+                                     trim_top=trim_top,
+                                     seeing=seeing, fit_radius=fit_radius)
+                else:
+                    self.run_average(data=data, wavelengths=wavelength,
+                                     name=name, line_ratios=line_strength,
+                                     trim_bottom=trim_bottom,
+                                     trim_top=trim_top,
+                                     seeing=seeing, fit_radius=fit_radius)
+                    self.run_individual(data=data, wavelengths=wavelength,
+                                        name=name, line_ratios=line_strength,
+                                        trim_bottom=trim_bottom,
+                                        trim_top=trim_top,
+                                        seeing=seeing, fit_radius=fit_radius)
+            except BackgroundFitError:
+                print(f'Unable to fit background for {wavelength.mean():.1f}, '
+                      f'probably because the order crosses between detectors. '
+                      f'Skipping...')
 
 
 def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
