@@ -234,7 +234,7 @@ class _Retrieval:
                          weights=1/spectrum_unc**2, method='least_squares')
 
     def _make_mask(self, shape: (int, int), header: dict, seeing: float,
-                   locs: [int], vertical_position: int or None):
+                   locs: [int], vertical_position: int or float or None):
         """
         Make a mask for the target using the vertical position calculated from
         the guide satellite frames and target radius padded with the seeing
@@ -503,7 +503,8 @@ class _Retrieval:
     # noinspection DuplicatedCode
     def _get_fit_radius(self, data: dict, wavelengths: u.Quantity,
                         trim_bottom: int, trim_top: int, seeing: float = 0.5,
-                        line_ratios: [float] = None):
+                        line_ratios: [float] = None,
+                        average_vertical_offset: int or float = 0):
         """
         Get the sigma for the fit by first running the average of 630.0 nm.
         """
@@ -516,7 +517,7 @@ class _Retrieval:
         x, y, mask, edge = self._make_mask(
             shape=(n_spa, n_spe), header=data['headers'][0],
             seeing=seeing, locs=data['feature_locations'],
-            vertical_position=None)
+            vertical_position=n_spa/2+average_vertical_offset)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             average_data = np.nanmean(data['data'], axis=0)
@@ -562,7 +563,8 @@ class _Retrieval:
     # noinspection DuplicatedCode
     def run_average(self, data: dict, wavelengths: u.Quantity, name: str,
                     trim_bottom: int, trim_top: int, fit_radius: float,
-                    seeing: float = 0.5, line_ratios: [float] = None):
+                    seeing: float = 0.5, line_ratios: [float] = None,
+                    average_vertical_offset: int or float = 0):
         """
         Retrieve the brightness of the average across the data frames. For now
         the average does not align using the trace because of edge effects. I
@@ -579,7 +581,7 @@ class _Retrieval:
         x, y, mask, edge = self._make_mask(
             shape=(n_spa, n_spe), header=data['headers'][0],
             seeing=seeing, locs=data['feature_locations'],
-            vertical_position=None)
+            vertical_position=n_spa/2+average_vertical_offset)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             average_data = np.nanmean(data['data'], axis=0)
@@ -781,7 +783,8 @@ class _Retrieval:
 
     def run_all(self, extended: bool = False, trim_bottom: int = 2,
                 trim_top: int = 2, horizontal_offset: int = 0,
-                seeing: float = 1/2, test: bool = False):
+                seeing: float = 1/2, test: bool = False,
+                average_vertical_offset: int or float = 0):
         """
         Wrapper to retrieve both the average and individual aurora
         brightnesses.
@@ -802,9 +805,6 @@ class _Retrieval:
 
         for wavelength, line_strength, name in zip(wavelengths, line_strengths,
                                                    names):
-            if test:
-                if wavelength.mean() != 630.0304 * u.nm:
-                    continue
             try:
                 data = self._get_data(wavelengths=wavelength,
                                       trim_bottom=trim_bottom,
@@ -816,22 +816,24 @@ class _Retrieval:
             print(f'Retrieving {name} brightnesses...')
             try:
                 if test:
-                    self.run_average(data=data, wavelengths=wavelength,
-                                     name=name, line_ratios=line_strength,
-                                     trim_bottom=trim_bottom,
-                                     trim_top=trim_top,
-                                     seeing=seeing, fit_radius=fit_radius)
+                    self.run_average(
+                        data=data, wavelengths=wavelength, name=name,
+                        line_ratios=line_strength, trim_bottom=trim_bottom,
+                        trim_top=trim_top, seeing=seeing,
+                        fit_radius=fit_radius,
+                        average_vertical_offset=average_vertical_offset)
                 else:
-                    self.run_average(data=data, wavelengths=wavelength,
-                                     name=name, line_ratios=line_strength,
-                                     trim_bottom=trim_bottom,
-                                     trim_top=trim_top,
-                                     seeing=seeing, fit_radius=fit_radius)
-                    self.run_individual(data=data, wavelengths=wavelength,
-                                        name=name, line_ratios=line_strength,
-                                        trim_bottom=trim_bottom,
-                                        trim_top=trim_top,
-                                        seeing=seeing, fit_radius=fit_radius)
+                    self.run_average(
+                        data=data, wavelengths=wavelength, name=name,
+                        line_ratios=line_strength, trim_bottom=trim_bottom,
+                        trim_top=trim_top, seeing=seeing,
+                        fit_radius=fit_radius,
+                        average_vertical_offset=average_vertical_offset)
+                    self.run_individual(
+                        data=data, wavelengths=wavelength, name=name,
+                        line_ratios=line_strength, trim_bottom=trim_bottom,
+                        trim_top=trim_top, seeing=seeing,
+                        fit_radius=fit_radius)
             except BackgroundFitError:
                 print(f'Unable to fit background for {wavelength.mean():.1f}, '
                       f'probably because the order crosses between detectors. '
@@ -841,6 +843,7 @@ class _Retrieval:
 def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
                   trim_bottom: int = 2, trim_top: int = 2,
                   horizontal_offset: int = 0,
+                  average_vertical_offset: int or float = 0,
                   seeing: float = 1.0, test: bool = False):
     """
     Wrapper function to run brightness retrievals on a set of reduced
@@ -858,14 +861,18 @@ def run_retrieval(reduced_data_directory: str or Path, extended: bool = False,
         How many rows to trim from the top of each order.
     horizontal_offset : int
         Additional pixel offset for horizontal centering.
+    average_vertical_offset : int or float
+        Pixel offset from the center of the spatial axis for the aperture in
+        the average retrievals.
     seeing : float
         Atmospheric seeing, use as a proxy to increase the aperture from which
         the retrieval occurs.
     test : bool
         If you want to test your settings without running the entire dataset,
-        this will run only the average for just 630.0 nm.
+        this will run only the averages.
     """
     retrieval = _Retrieval(reduced_data_directory=reduced_data_directory)
     retrieval.run_all(extended=extended, trim_bottom=trim_bottom,
                       trim_top=trim_top, horizontal_offset=horizontal_offset,
+                      average_vertical_offset=average_vertical_offset,
                       seeing=seeing, test=test)
