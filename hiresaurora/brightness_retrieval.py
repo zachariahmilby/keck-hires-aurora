@@ -12,7 +12,7 @@ from astropy.time import Time
 from hirespipeline.files import make_directory
 from lmfit import Parameters
 from lmfit.model import ModelResult
-from lmfit.models import LinearModel, GaussianModel
+from lmfit.models import ConstantModel, GaussianModel
 from scipy.ndimage import median_filter
 
 from hiresaurora.alignment import _TraceOffsets
@@ -198,12 +198,11 @@ class _Retrieval:
                           for wavelength in line_wavelengths]
         n_lines = len(center_indices)
         prefixes = [f'gaussian{i + 1}_' for i in range(n_lines)]
-        model = LinearModel(prefix='linear_')
+        model = ConstantModel(prefix='constant_')
         model += np.sum([GaussianModel(prefix=prefix) for prefix in prefixes],
                         dtype=object)
         params = Parameters()
-        params.add('linear_intercept', value=0, min=-np.inf, max=np.inf)
-        params.add('linear_slope', value=0, min=-np.inf, max=np.inf)
+        params.add('constant_c', value=0, min=-np.inf, max=np.inf)
         for i, prefix in enumerate(prefixes):
             if i != 0:
                 params.add(f'{prefix}amplitude', value=np.nanmax(spectrum),
@@ -228,7 +227,9 @@ class _Retrieval:
             if fit_sigma is None:
                 fit_sigma = (dwave[center_indices[i]] * target_radius /
                              (2 * np.log(2)))
-            params.add(f'{prefix}sigma', value=fit_sigma, vary=False)
+                params.add(f'{prefix}sigma', value=fit_sigma, vary=True)
+            else:
+                params.add(f'{prefix}sigma', value=fit_sigma, vary=False)
         return model.fit(spectrum, params=params, x=wavelengths,
                          weights=1/spectrum_unc**2, method='least_squares')
 
@@ -625,19 +626,14 @@ class _Retrieval:
                 line_strengths=line_ratios,
                 target_radius=radius.value/data['headers'][0]['SPESCALE'],
                 fit_sigma=fit_radius)
-            intercept = fit.params['linear_intercept'].value
-            slope = fit.params['linear_slope'].value
+            intercept = fit.params['constant_c'].value
             fitted_brightness = np.nansum(
-                (fit.best_fit -
-                 (intercept + slope * data['wavelength_centers'].value)
-                 ) * dwavelength)
+                (fit.best_fit - intercept) * dwavelength)
             fitted_uncertainty = np.nansum(
                 fit.eval_uncertainty(x=data['wavelength_centers'].value)
                 * dwavelength)
             observed_brightness = np.nansum(
-                (spectrum_1d.value -
-                 (intercept + slope * data['wavelength_centers'].value)
-                 ) * dwavelength)
+                (spectrum_1d.value - intercept) * dwavelength)
             observed_uncertainty = np.sqrt(
                 np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
 
@@ -724,19 +720,14 @@ class _Retrieval:
                     line_strengths=line_ratios,
                     target_radius=radius.value/data['headers'][0]['SPESCALE'],
                     fit_sigma=fit_radius)
-                intercept = fit.params['linear_intercept'].value
-                slope = fit.params['linear_slope'].value
+                intercept = fit.params['constant_c'].value
                 fitted_brightness = np.nansum(
-                    (fit.best_fit -
-                     (intercept + slope * data['wavelength_centers'].value)
-                     ) * dwavelength)
+                    (fit.best_fit - intercept) * dwavelength)
                 fitted_uncertainty = np.nansum(
                     fit.eval_uncertainty(x=data['wavelength_centers'].value)
                     * dwavelength)
                 observed_brightness = np.nansum(
-                    (spectrum_1d.value -
-                     (intercept + slope * data['wavelength_centers'].value)
-                     ) * dwavelength)
+                    (spectrum_1d.value - intercept) * dwavelength)
                 observed_uncertainty = np.sqrt(
                     np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
 
