@@ -113,6 +113,7 @@ class _Retrieval:
         right = None
         locs = None
         filenames = []
+        pixel_dimensions = None
         for file in files:
             with fits.open(file) as hdul:
                 headers.append(hdul['PRIMARY'].header)
@@ -147,6 +148,10 @@ class _Retrieval:
                     wavelength_edges = _doppler_shift_wavelengths(
                         hdul['BIN_EDGE_WAVELENGTHS'].data[select] * u.nm,
                         velocity=velocity)
+                if pixel_dimensions is None:
+                    pixel_dimensions = [
+                        hdul['PRIMARY'].header['SPASCALE'],
+                        hdul['PRIMARY'].header['SPESCALE']] * u.arcsec
         for file in trace_files:
             with fits.open(file) as hdul:
                 select = np.s_[order, trim_bottom:-trim_top,
@@ -161,6 +166,7 @@ class _Retrieval:
             'wavelength_centers': wavelength_centers,
             'wavelength_edges': wavelength_edges,
             'feature_locations': locs,
+            'pixel_dimensions': pixel_dimensions,
             'background_profiles': np.array(background_profiles),
             'filenames': np.array(filenames),
         }
@@ -243,6 +249,7 @@ class _Retrieval:
         radius = self._get_target_radius(header).to(u.arcsec).value
         x, y = np.meshgrid(np.arange(shape[1]) * header['spescale'],
                            np.arange(shape[0]) * header['spascale'])
+        aperture_radius = radius + seeing
         masks = []
         edges = []
         if vertical_position is None:
@@ -252,15 +259,15 @@ class _Retrieval:
                 (x - header['spescale'] * loc) ** 2 +
                 (y - header['spascale'] * vertical_position) ** 2)
             mask = np.ones_like(distance)
-            mask[np.where(distance < radius + seeing)] = np.nan
-            mask[np.where(distance >= radius + seeing)] = 1
+            mask[np.where(distance < aperture_radius)] = np.nan
+            mask[np.where(distance >= aperture_radius)] = 1
             edge = np.zeros_like(mask)
-            edge[np.where(distance < radius + seeing)] = 1
+            edge[np.where(distance < aperture_radius)] = 1
             masks.append(mask)
             edges.append(edge)
         edges = np.sum(edges, axis=0)
         edges[np.where(edges > 0)] = 1
-        return x, y, np.mean(masks, axis=0), edges
+        return x, y, np.mean(masks, axis=0), edges, aperture_radius
 
     @staticmethod
     def contour_rect_slow(im):
@@ -338,7 +345,7 @@ class _Retrieval:
             vmax=np.nanpercentile(calibrated_data.value, 99))
         img = axes[0, 0].pcolormesh(x, y, calibrated_data, cmap=cmap,
                                     norm=norm)
-        plt.colorbar(img, ax=axes[0, 1], label='Spectral Brightness [R/nm]')
+        plt.colorbar(img, ax=axes[0, 1], label='Brightness [R]')
         axes[0, 1].set_title('Data (Smoothed)')
         axes[0, 1].pcolormesh(x, y, convolve(calibrated_data,
                                              Gaussian2DKernel(x_stddev=1)),
@@ -347,7 +354,7 @@ class _Retrieval:
             vmin=np.nanpercentile(calibrated_unc.value, 1),
             vmax=np.nanpercentile(calibrated_unc.value, 99))
         img = axes[1, 0].pcolormesh(x, y, calibrated_unc, cmap=cmap, norm=norm)
-        plt.colorbar(img, ax=axes[1, 1], label='Spectral Brightness [R/nm]')
+        plt.colorbar(img, ax=axes[1, 1], label='Brightness [R]')
         convolved_unc = convolve(calibrated_unc, Gaussian2DKernel(x_stddev=1),
                                  boundary='extend')
         axes[1, 1].pcolormesh(x, y, convolved_unc, cmap=cmap, norm=norm)
@@ -504,7 +511,7 @@ class _Retrieval:
     def _get_fit_radius(self, data: dict, wavelengths: u.Quantity,
                         trim_bottom: int, trim_top: int, seeing: float = 0.5,
                         line_ratios: [float] = None,
-                        average_vertical_offset: int or float = 0):
+                        average_vertical_offset: int or float = 0) -> float:
         """
         Get the sigma for the fit by first running the average of 630.0 nm.
         """
@@ -514,7 +521,7 @@ class _Retrieval:
             wavelengths=wavelengths, order=data['order'],
             trim_bottom=trim_bottom, trim_top=trim_top)
 
-        x, y, mask, edge = self._make_mask(
+        x, y, mask, edge, aperture_radius = self._make_mask(
             shape=(n_spa, n_spe), header=data['headers'][0],
             seeing=seeing, locs=data['feature_locations'],
             vertical_position=n_spa/2+average_vertical_offset)
@@ -548,7 +555,6 @@ class _Retrieval:
         ind = np.where(np.isnan(np.mean(mask, axis=1)))[0]
         spectrum_1d = np.nansum(calibrated_data[ind], axis=0)
         spectrum_1d_unc = np.sqrt(np.sum(calibrated_unc[ind] ** 2, axis=0))
-
         fit = self._fit_gaussian(
             wavelengths=data['wavelength_centers'].value,
             spectrum=spectrum_1d.value,
@@ -559,6 +565,151 @@ class _Retrieval:
             fit_sigma=None)
 
         return fit.params['gaussian1_sigma'].value
+
+    # noinspection DuplicatedCode
+    def _get_brightness(self, data: u.Quantity, unc: u.Quantity,
+                        wavelengths: u.Quantity,
+                        mask: np.ndarray, slit_profile: np.ndarray,
+                        calibration: _FluxCalibration, pixel_size: u.Quantity,
+                        target_radius: u.Quantity, fit_radius: float,
+                        line_wavelengths: u.Quantity, line_ratios: np.ndarray):
+        """
+        Retrieve aurora brightness from the data. For now, calculating the
+        average does not align using the trace because of edge effects. I may
+        change this at a later date.
+        """
+
+        slit_profile /= np.nanmax(slit_profile)
+        background = _Background(data, unc, mask, slit_profile)
+        bgsub_data = data - background.background
+        pixel_area = (pixel_size[0] * pixel_size[1]).to(u.sr)
+        target_area = (np.pi * target_radius**2).to(u.sr)
+        scaling_ratio = (pixel_area / target_area).si.value
+
+        # calibrate data
+        bgsub_data = bgsub_data * u.electron / u.s / target_area
+        bgsub_unc = unc * u.electron / u.s / target_area
+        calibrated_data = (bgsub_data / calibration.calibration_factors)
+
+        # calculate calibrated uncertainty
+        data_nsr = bgsub_unc / bgsub_data
+        calibration_nsr = (calibration.calibration_factors_unc /
+                           calibration.calibration_factors)
+        calibrated_unc = np.abs(calibrated_data) * np.sqrt(
+            data_nsr ** 2 + calibration_nsr ** 2)
+
+        # calculate 1D spectrum
+        ind = np.where(np.isnan(np.mean(mask, axis=1)))[0]
+        spectrum_1d = np.nansum(calibrated_data[ind], axis=0)
+        spectrum_1d_unc = np.sqrt(np.sum(calibrated_unc[ind] ** 2, axis=0)
+                                  )
+        dwavelength = np.gradient(wavelengths.value) * wavelengths.unit
+
+        fit = self._fit_gaussian(
+            wavelengths=wavelengths.value,
+            spectrum=spectrum_1d.value,
+            spectrum_unc=spectrum_1d_unc.value,
+            line_wavelengths=line_wavelengths,
+            line_strengths=line_ratios,
+            target_radius=(target_radius / pixel_size[1]).value,
+            fit_sigma=fit_radius)
+        intercept = fit.params['constant_c'].value
+        fitted_brightness = np.nansum(
+            (fit.best_fit - intercept) * dwavelength.value)
+        fitted_uncertainty = np.nansum(
+            fit.eval_uncertainty(x=wavelengths.value)
+            * dwavelength.value)
+        observed_brightness = np.nansum(
+            (spectrum_1d.value - intercept) * dwavelength.value)
+        observed_uncertainty = np.sqrt(
+            np.nansum((spectrum_1d_unc.value * dwavelength.value) ** 2)
+        )
+
+        # convert to appropriate significant figures
+        fitted_brightness, fitted_uncertainty = format_uncertainty(
+            fitted_brightness, fitted_uncertainty)
+        observed_brightness, observed_uncertainty = format_uncertainty(
+            observed_brightness, observed_uncertainty)
+
+        # integrate 2D data
+        calibrated_data *= dwavelength / scaling_ratio
+        calibrated_unc *= dwavelength / scaling_ratio
+
+        retrieved_quantities = {
+            'fitted_brightness': fitted_brightness,
+            'fitted_uncertainty': fitted_uncertainty,
+            'observed_brightness': observed_brightness,
+            'observed_uncertainty': observed_uncertainty,
+            'calibrated_data': calibrated_data.to(u.R),
+            'calibrated_unc': calibrated_unc.to(u.R),
+            'spectrum_1d': spectrum_1d.to(u.R / u.nm),
+            'spectrum_1d_unc': spectrum_1d_unc.to(u.R / u.nm),
+            'fit': fit,
+        }
+
+        return retrieved_quantities
+
+    def _save_graphics_and_results(self, retrieved_quantities: dict,
+                                   x: np.ndarray, y: np.ndarray, data: dict,
+                                   edge: np.ndarray, save_directory: str,
+                                   file_name: str, average: bool,
+                                   header: dict, trace_offset: float,
+                                   line: str):
+        """
+        Wrapper method to save graphics and results.
+        """
+        self._qa_graphic_2d(x, y, retrieved_quantities['calibrated_data'],
+                            retrieved_quantities['calibrated_unc'], edge,
+                            data['pixel_dimensions'][1],
+                            data['pixel_dimensions'][0],
+                            f'{save_directory}/images_2d', file_name)
+
+        self._qa_graphic_1d(
+            data['wavelength_centers'], retrieved_quantities['spectrum_1d'],
+            retrieved_quantities['spectrum_1d_unc'],
+            retrieved_quantities['fit'],
+            retrieved_quantities['fitted_brightness'],
+            retrieved_quantities['fitted_uncertainty'],
+            retrieved_quantities['observed_brightness'],
+            retrieved_quantities['observed_uncertainty'],
+            f'{save_directory}/spectra_1d', file_name)
+
+        if average:
+            self._save_average_results(
+                save_directory, retrieved_quantities['fitted_brightness'],
+                retrieved_quantities['fitted_uncertainty'],
+                retrieved_quantities['observed_brightness'],
+                retrieved_quantities['observed_uncertainty'])
+
+        else:
+            self._save_individual_results(
+                save_directory, retrieved_quantities['fitted_brightness'],
+                retrieved_quantities['fitted_uncertainty'],
+                retrieved_quantities['observed_brightness'],
+                retrieved_quantities['observed_uncertainty'],
+                header['DATE-OBS']
+            )
+
+            best_fit = retrieved_quantities['fit'].best_fit
+            best_fit_unc = retrieved_quantities['fit'].eval_uncertainty(
+                x=data['wavelength_centers'].value)
+            self.save_fits(header=header,
+                           spectrum_2d=retrieved_quantities['calibrated_data'],
+                           unc_2d=retrieved_quantities['calibrated_unc'],
+                           spectrum_1d=retrieved_quantities['spectrum_1d'],
+                           unc_1d=retrieved_quantities['spectrum_1d_unc'],
+                           fit_1d=best_fit, fit_unc_1d=best_fit_unc,
+                           wavelength_centers=data['wavelength_centers'],
+                           wavelength_edges=data['wavelength_edges'],
+                           line=line,
+                           trace_center=trace_offset,
+                           save_directory=Path(save_directory),
+                           file_name=file_name.replace('.jpg',
+                                                       '.calibrated.fits.gz'))
+
+        self._save_fit_results(retrieved_quantities['fit'],
+                               f'{save_directory}/spectra_1d',
+                               file_name.replace('.jpg', '.txt'))
 
     # noinspection DuplicatedCode
     def run_average(self, data: dict, wavelengths: u.Quantity, name: str,
@@ -577,8 +728,10 @@ class _Retrieval:
             wavelengths=wavelengths, order=data['order'],
             trim_bottom=trim_bottom, trim_top=trim_top)
 
+        target_radius = self._get_target_radius(data['headers'][0])
+
         # average
-        x, y, mask, edge = self._make_mask(
+        x, y, mask, edge, aperture_radius = self._make_mask(
             shape=(n_spa, n_spe), header=data['headers'][0],
             seeing=seeing, locs=data['feature_locations'],
             vertical_position=n_spa/2+average_vertical_offset)
@@ -589,77 +742,27 @@ class _Retrieval:
                 np.nansum(data['uncertainty'] ** 2, axis=0)) / n_obs
             average_slit_profile = np.nanmean(
                 data['background_profiles'], axis=0)
-            average_slit_profile /= np.nanmax(average_slit_profile)
-            background = _Background(average_data, average_unc, mask,
-                                     average_slit_profile)
-            bgsub_data = average_data - background.background
 
-        # calibrate data
-        radius = self._get_target_radius(data['headers'][0])
-        area = (np.pi * radius ** 2).to(u.sr)
-        bgsub_data = bgsub_data * u.electron / u.s / area
-        bgsub_unc = average_unc * u.electron / u.s / area
-        calibrated_data = bgsub_data / calibration.calibration_factors
+        # try:
 
-        # calculate calibrated uncertainty
-        data_nsr = bgsub_unc / bgsub_data
-        calibration_nsr = (calibration.calibration_factors_unc /
-                           calibration.calibration_factors)
-        calibrated_unc = np.abs(calibrated_data) * np.sqrt(
-            data_nsr ** 2 + calibration_nsr ** 2)
+        # noinspection PyTypeChecker
+        retrieved_quantities = self._get_brightness(
+            data=average_data, unc=average_unc,
+            wavelengths=data['wavelength_centers'], mask=mask,
+            slit_profile=average_slit_profile, calibration=calibration,
+            pixel_size=data['pixel_dimensions'], target_radius=target_radius,
+            fit_radius=fit_radius, line_wavelengths=wavelengths,
+            line_ratios=line_ratios)
 
-        self._qa_graphic_2d(x, y, calibrated_data, calibrated_unc, edge,
-                            data['headers'][0]['spescale'],
-                            data['headers'][0]['spascale'],
-                            f'{save_directory}/spectra_2d', 'average.jpg')
+        self._save_graphics_and_results(
+            retrieved_quantities=retrieved_quantities, x=x, y=y,
+            data=data, edge=edge, save_directory=save_directory,
+            file_name='average.jpg', average=True,
+            header=data['headers'][0], trace_offset=0, line=name)
 
-        # calculate 1D spectrum
-        ind = np.where(np.isnan(np.mean(mask, axis=1)))[0]
-        spectrum_1d = np.nansum(calibrated_data[ind], axis=0)
-        spectrum_1d_unc = np.sqrt(np.sum(calibrated_unc[ind] ** 2, axis=0))
-        dwavelength = np.gradient(data['wavelength_centers'].value)
-
-        try:
-            fit = self._fit_gaussian(
-                wavelengths=data['wavelength_centers'].value,
-                spectrum=spectrum_1d.value,
-                spectrum_unc=spectrum_1d_unc.value,
-                line_wavelengths=wavelengths,
-                line_strengths=line_ratios,
-                target_radius=radius.value/data['headers'][0]['SPESCALE'],
-                fit_sigma=fit_radius)
-            intercept = fit.params['constant_c'].value
-            fitted_brightness = np.nansum(
-                (fit.best_fit - intercept) * dwavelength)
-            fitted_uncertainty = np.nansum(
-                fit.eval_uncertainty(x=data['wavelength_centers'].value)
-                * dwavelength)
-            observed_brightness = np.nansum(
-                (spectrum_1d.value - intercept) * dwavelength)
-            observed_uncertainty = np.sqrt(
-                np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
-
-            # convert to appropriate significant figures
-            fitted_brightness, fitted_uncertainty = format_uncertainty(
-                fitted_brightness, fitted_uncertainty)
-            observed_brightness, observed_uncertainty = format_uncertainty(
-                observed_brightness, observed_uncertainty)
-
-            self._qa_graphic_1d(
-                data['wavelength_centers'], spectrum_1d, spectrum_1d_unc, fit,
-                fitted_brightness, fitted_uncertainty, observed_brightness,
-                observed_uncertainty,
-                f'{save_directory}/spectra_1d', 'average.jpg')
-
-            self._save_average_results(
-                save_directory, fitted_brightness, fitted_uncertainty,
-                observed_brightness, observed_uncertainty)
-
-            self._save_fit_results(fit, f'{save_directory}/spectra_1d',
-                                   'average.txt')
-        except ValueError:
-            print(f'Unable to retrieve {wavelengths.mean()} brightness, '
-                  f'skipping...')
+        # except ValueError:
+        #     print(f'Unable to retrieve {wavelengths.mean()} brightness, '
+        #           f'skipping...')
 
     # noinspection DuplicatedCode
     def run_individual(self, data: dict, wavelengths: u.Quantity, name: str,
@@ -680,106 +783,41 @@ class _Retrieval:
             wavelengths=wavelengths, order=data['order'],
             trim_bottom=trim_bottom, trim_top=trim_top)
 
+        target_radius = self._get_target_radius(data['headers'][0])
+
         for obs in range(n_obs):
-            filename = data['filenames'][obs].replace(
+
+            file_name = data['filenames'][obs].replace(
                 '_reduced.fits.gz', '.jpg')
-            x, y, mask, edge = self._make_mask(
+            x, y, mask, edge, aperture_radius = self._make_mask(
                 shape=(n_spa, n_spe), header=data['headers'][obs],
                 seeing=seeing, locs=data['feature_locations'],
                 vertical_position=trace_offsets.centers[obs])
             obs_data = data['data'][obs]
             obs_unc = data['uncertainty'][obs]
             obs_slit_profile = data['background_profiles'][obs]
-            obs_slit_profile /= np.nanmax(obs_slit_profile)
-            background = _Background(obs_data, obs_unc, mask, obs_slit_profile)
-            bgsub_data = obs_data - background.background
-
-            # calibrate data
-            radius = self._get_target_radius(data['headers'][obs])
-            area = (np.pi * radius ** 2).to(u.sr)
-            bgsub_data = bgsub_data * u.electron / u.s / area
-            bgsub_unc = obs_unc * u.electron / u.s / area
-            calibrated_data = bgsub_data / calibration.calibration_factors
-
-            # calculate calibrated uncertainty
-            data_nsr = bgsub_unc / bgsub_data
-            calibration_nsr = (calibration.calibration_factors_unc /
-                               calibration.calibration_factors)
-            calibrated_unc = np.abs(calibrated_data) * np.sqrt(
-                data_nsr ** 2 + calibration_nsr ** 2)
-
-            # calculate 1D spectrum
-            ind = np.where(np.isnan(np.mean(mask, axis=1)))[0]
-            spectrum_1d = np.nansum(calibrated_data[ind], axis=0)
-            spectrum_1d_unc = np.sqrt(np.sum(calibrated_unc[ind] ** 2, axis=0))
-            dwavelength = np.gradient(data['wavelength_centers'].value)
 
             try:
-                fit = self._fit_gaussian(
-                    wavelengths=data['wavelength_centers'].value,
-                    spectrum=spectrum_1d.value,
-                    spectrum_unc=spectrum_1d_unc.value,
-                    line_wavelengths=wavelengths,
-                    line_strengths=line_ratios,
-                    target_radius=radius.value/data['headers'][0]['SPESCALE'],
-                    fit_sigma=fit_radius)
-                intercept = fit.params['constant_c'].value
-                fitted_brightness = np.nansum(
-                    (fit.best_fit - intercept) * dwavelength)
-                fitted_uncertainty = np.nansum(
-                    fit.eval_uncertainty(x=data['wavelength_centers'].value)
-                    * dwavelength)
-                observed_brightness = np.nansum(
-                    (spectrum_1d.value - intercept) * dwavelength)
-                observed_uncertainty = np.sqrt(
-                    np.nansum((spectrum_1d_unc * dwavelength) ** 2)).value
 
-                # convert to appropriate significant figures
-                fitted_brightness, fitted_uncertainty = format_uncertainty(
-                    fitted_brightness, fitted_uncertainty)
-                observed_brightness, observed_uncertainty = format_uncertainty(
-                    observed_brightness, observed_uncertainty)
+                # noinspection PyTypeChecker
+                retrieved_quantities = self._get_brightness(
+                    data=obs_data, unc=obs_unc,
+                    wavelengths=data['wavelength_centers'], mask=mask,
+                    slit_profile=obs_slit_profile, calibration=calibration,
+                    pixel_size=data['pixel_dimensions'],
+                    target_radius=target_radius, fit_radius=fit_radius,
+                    line_wavelengths=wavelengths, line_ratios=line_ratios)
 
-                self._qa_graphic_2d(x, y, calibrated_data, calibrated_unc,
-                                    edge,
-                                    data['headers'][0]['spescale'],
-                                    data['headers'][0]['spascale'],
-                                    f'{save_directory}/spectra_2d', filename)
+                self._save_graphics_and_results(
+                    retrieved_quantities=retrieved_quantities, x=x, y=y,
+                    data=data, edge=edge, save_directory=save_directory,
+                    file_name=file_name, average=False,
+                    header=data['headers'][obs],
+                    trace_offset=trace_offsets.centers[obs], line=name)
 
-                self._qa_graphic_1d(
-                    data['wavelength_centers'], spectrum_1d, spectrum_1d_unc,
-                    fit, fitted_brightness, fitted_uncertainty,
-                    observed_brightness, observed_uncertainty,
-                    f'{save_directory}/spectra_1d', filename)
-
-                self._save_individual_results(
-                    save_directory, fitted_brightness, fitted_uncertainty,
-                    observed_brightness, observed_uncertainty,
-                    data['headers'][obs]['DATE-OBS']
-                )
-
-                self._save_fit_results(fit, f'{save_directory}/spectra_1d',
-                                       filename.replace('jpg', 'txt'))
-
-                best_fit = fit.best_fit
-                best_fit_unc = fit.eval_uncertainty(
-                    x=data['wavelength_centers'].value)
-                file_name = data['filenames'][obs].replace(
-                    f'reduced.fits.gz', f'calibrated.fits.gz')
-                self.save_fits(header=data['headers'][obs],
-                               spectrum_2d=calibrated_data,
-                               unc_2d=calibrated_unc,
-                               spectrum_1d=spectrum_1d,
-                               unc_1d=spectrum_1d_unc,
-                               fit_1d=best_fit, fit_unc_1d=best_fit_unc,
-                               wavelength_centers=data['wavelength_centers'],
-                               wavelength_edges=data['wavelength_edges'],
-                               line=name,
-                               trace_center=trace_offsets.centers[obs],
-                               save_directory=Path(save_directory),
-                               file_name=file_name)
             except ValueError:
-                print('Unable to retrieve brightness, skipping...')
+                print(f'Unable to retrieve {wavelengths.mean()} brightness, '
+                      f'skipping...')
 
     def run_all(self, extended: bool = False, trim_bottom: int = 2,
                 trim_top: int = 2, horizontal_offset: int = 0,

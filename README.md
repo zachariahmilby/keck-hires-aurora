@@ -198,6 +198,17 @@ you'll find a `results.txt` file which includes the following columns:
 5. `measured_uncertainty_[R]`: the uncertainty of the integrated observed 
    spectrum in rayleighs
 
+You'll also find images of the one-dimensional spectra with the Gaussian fits 
+in the directory `spectra_1d` and calibrated images in rayleighs in the 
+directory `images_2d`.
+>**NOTE**<br>
+> Even though the average brightness in the two-dimensional images should be 
+> equal to the retrieved brightness, the images appear dimmer (even the maximum 
+> brightness in any pixel is less than the retrieved brightness). This is 
+> because atmospheric seeing has spread out the signal. If it were all 
+> contained within the apparent disk of the target, the average value would be 
+> that of the retrieved brightness.
+
 
 ## Calibration Data Sources
 Jupiter's spectral reflectivity (I/F) comes from a digitized version of Woodman 
