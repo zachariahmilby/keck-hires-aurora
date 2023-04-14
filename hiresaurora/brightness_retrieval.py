@@ -743,26 +743,26 @@ class _Retrieval:
             average_slit_profile = np.nanmean(
                 data['background_profiles'], axis=0)
 
-        # try:
+        try:
 
-        # noinspection PyTypeChecker
-        retrieved_quantities = self._get_brightness(
-            data=average_data, unc=average_unc,
-            wavelengths=data['wavelength_centers'], mask=mask,
-            slit_profile=average_slit_profile, calibration=calibration,
-            pixel_size=data['pixel_dimensions'], target_radius=target_radius,
-            fit_radius=fit_radius, line_wavelengths=wavelengths,
-            line_ratios=line_ratios)
+            # noinspection PyTypeChecker
+            retrieved_quantities = self._get_brightness(
+                data=average_data, unc=average_unc,
+                wavelengths=data['wavelength_centers'], mask=mask,
+                slit_profile=average_slit_profile, calibration=calibration,
+                pixel_size=data['pixel_dimensions'], target_radius=target_radius,
+                fit_radius=fit_radius, line_wavelengths=wavelengths,
+                line_ratios=line_ratios)
 
-        self._save_graphics_and_results(
-            retrieved_quantities=retrieved_quantities, x=x, y=y,
-            data=data, edge=edge, save_directory=save_directory,
-            file_name='average.jpg', average=True,
-            header=data['headers'][0], trace_offset=0, line=name)
+            self._save_graphics_and_results(
+                retrieved_quantities=retrieved_quantities, x=x, y=y,
+                data=data, edge=edge, save_directory=save_directory,
+                file_name='average.jpg', average=True,
+                header=data['headers'][0], trace_offset=0, line=name)
 
-        # except ValueError:
-        #     print(f'Unable to retrieve {wavelengths.mean()} brightness, '
-        #           f'skipping...')
+        except ValueError:
+            print(f'Unable to retrieve {wavelengths.mean()} brightness, '
+                  f'skipping...')
 
     # noinspection DuplicatedCode
     def run_individual(self, data: dict, wavelengths: u.Quantity, name: str,
