@@ -1,2 +1,3 @@
+from hiresaurora.pipeline import AuroraPipeline
 from hiresaurora.planning import EclipsePrediction
-from hiresaurora.brightness_retrieval import run_retrieval
+from hiresaurora.general import AuroraLines

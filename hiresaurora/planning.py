@@ -176,7 +176,7 @@ class _AngularSeparation:
         return self._target2_ephemeris['ang_width'].value/2 * u.arcsec
 
 
-class TelescopePointing:
+class _TelescopePointing:
     """
     Calculate the offsets for manual pointing of the Keck telescope.
     """
@@ -234,6 +234,7 @@ class TelescopePointing:
         return self._offsets_target_to_guide
 
 
+# noinspection DuplicatedCode
 class EclipsePrediction:
     """
     This class finds all instances of a target (Io, Europa, Ganymede or
@@ -281,6 +282,9 @@ class EclipsePrediction:
 
     @staticmethod
     def _convert_deltav(deltav: int | float):
+        """
+        Convert relative velocity to a quantity, assuming km/s units.
+        """
         deltav = float(deltav)
         if not isinstance(deltav, u.Quantity):
             deltav = deltav * u.km / u.s
@@ -558,7 +562,7 @@ class EclipsePrediction:
         if isinstance(save_directory, Path):
             save_directory = str(Path)
         for eclipse in self._eclipses:
-            pointing_information = TelescopePointing(
+            pointing_information = _TelescopePointing(
                 eclipse, guide_satellite=target_info[guide_satellite]['ID'])
             date = eclipse['datetime_str'][0].split(' ')[0]
 

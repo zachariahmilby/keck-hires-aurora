@@ -20,9 +20,9 @@ def _horizons_query(target: str, epochs: float or dict,
                                skip_daylight=skip_daylight)
 
 
-def _get_ephemeris(target: str, time: Time,
+def _get_ephemeris(target: str, time: Time or str,
                    location: str = naif_codes['Maunakea'],
-                   airmass_lessthan: int | float | None = 2,
+                   airmass_lessthan: int | float | None = 3,
                    skip_daylight: bool = False) -> dict:
     """
     Query the JPL Horizons System for a single time.
@@ -35,7 +35,7 @@ def _get_ephemeris(target: str, time: Time,
 
 def _get_ephemerides(target: str, starting_datetime: str, ending_datetime: str,
                      step: str = '1m', location: str = naif_codes['Maunakea'],
-                     airmass_lessthan: int | float | None = 2,
+                     airmass_lessthan: int | float | None = 3,
                      skip_daylight: bool = False) -> dict:
     """
     Query the JPL Horizons System for a range of times.

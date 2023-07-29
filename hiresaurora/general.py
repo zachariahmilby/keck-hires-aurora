@@ -20,6 +20,9 @@ naif_codes = {'Jupiter': '599', 'Io': '501', 'Europa': '502',
 
 # noinspection PyUnresolvedReferences
 def _doppler_shift_wavelengths(wavelengths: u.Quantity, velocity):
+    """
+    Apply Doppler shift to wavelengths.
+    """
     return (wavelengths * (1 - velocity.si / c.c)).si.to(u.nm)
 
 
@@ -40,7 +43,7 @@ class _EmissionLine:
         return self._strengths
 
 
-emission_lines = {
+_emission_lines = {
     '[O I] 557.7 nm': _EmissionLine(wavelengths=[557.7339] * u.nm,
                                     strengths=[1.]),
     '[O I] 630.0 nm': _EmissionLine(wavelengths=[630.0304] * u.nm,
@@ -55,8 +58,10 @@ emission_lines = {
         strengths=[5/6, 1., 1.]),
     'H I 656.3 nm': _EmissionLine(wavelengths=[656.2852] * u.nm,
                                   strengths=[1.]),
-    'Na I 589.3 nm': _EmissionLine(wavelengths=[588.9950, 589.5924] * u.nm,
-                                   strengths=[1., 1/2]),
+    'Na I 589.0 nm': _EmissionLine(wavelengths=[588.9950] * u.nm,
+                                   strengths=[1.]),
+    'Na I 589.6 nm': _EmissionLine(wavelengths=[589.5924] * u.nm,
+                                   strengths=[1.]),
     'Na I 818.3 nm': _EmissionLine(wavelengths=[818.3256] * u.nm,
                                    strengths=[1.]),
     'Na I 819.5 nm': _EmissionLine(wavelengths=[819.4790, 819.4824] * u.nm,
@@ -80,61 +85,89 @@ emission_lines = {
     '[S II] 671.6 nm': _EmissionLine(wavelengths=[671.6338] * u.nm,
                                      strengths=[1.]),
     '[S II] 673.1 nm': _EmissionLine(wavelengths=[673.0713] * u.nm,
-                                     strengths=[1.])
+                                     strengths=[1.]),
+    'Cl I 837.6 nm': _EmissionLine(wavelengths=[837.5943] * u.nm,
+                                   strengths=[1.]),
 }
 
 
-def aurora_line_wavelengths(extended: bool = False) -> [u.Quantity]:
+class AuroraLines:
     """
-    Retrieve a list of all of the aurora wavelengths. Each is in a sublist to
-    keep closely-spaced doublets and triplets together.
-
-    Parameters
-    ----------
-    extended: bool
-        If true, return a larger list of wavelengths appropriate for Io's
-        atmosphere.
-
-    Returns
-    -------
-    A list of aurora line wavelengths as Astropy quantities.
+    Class to hold aurora emission line information.
     """
+    def __init__(self, extended: bool = False):
+        """
+        Parameters
+        ----------
+        extended : bool
+            Whether or not to include the extended Io line sets.
+        """
+        self._extended = extended
+        self._aurora_line_wavelengths = self._get_aurora_line_wavelengths()
+        self._emission_line_strengths = self._get_emission_line_strengths()
+        self._aurora_line_names = self._get_aurora_line_names()
 
-    wavelengths = [emission_lines[key].wavelengths
-                   for key in emission_lines.keys()]
+    def __str__(self):
+        print_str = 'Aurora lines'
+        if self._extended:
+            print_str += ' (extended set):'
+        else:
+            print_str += ':'
+        for name in self._aurora_line_names:
+            print_str += '\n' + f'   {name}'
+        return print_str
 
-    if extended:
-        return wavelengths
-    else:
-        return wavelengths[:6]
+    def _get_aurora_line_wavelengths(self) -> [u.Quantity]:
+        """
+        Retrieve a list of all of the aurora wavelengths. Each is in a sublist
+        to keep closely-spaced doublets and triplets together.
+        """
 
+        wavelengths = [_emission_lines[key].wavelengths
+                       for key in _emission_lines.keys()]
 
-def emission_line_strengths(extended: bool = False) -> [[float]]:
-    """
-    Approximate line strengths based on emission probabilities (Einstein A
-    coefficients).
-    """
-    strengths = [emission_lines[key].strengths
-                 for key in emission_lines.keys()]
+        if self._extended:
+            return wavelengths
+        else:
+            return wavelengths[:6]
 
-    if extended:
-        return strengths
-    else:
-        return strengths[:6]
+    def _get_emission_line_strengths(self) -> [[float]]:
+        """
+        Approximate line strengths based on emission probabilities (Einstein A
+        coefficients).
+        """
+        strengths = [_emission_lines[key].strengths
+                     for key in _emission_lines.keys()]
 
+        if self._extended:
+            return strengths
+        else:
+            return strengths[:6]
 
-def aurora_line_names(extended: bool = False) -> [str]:
-    """
-    Get the atom name and wavelength to 1 decimal place. In astronomer notation
-    (I for neutral, II for singly-ionized, etc., with square brackets for
-    forbidden transitions).
-    """
-    names = list(emission_lines.keys())
+    def _get_aurora_line_names(self) -> [str]:
+        """
+        Get the atom name and wavelength to 1 decimal place. In astronomer
+        notation (I for neutral, II for singly-ionized, etc., with square
+        brackets for forbidden transitions).
+        """
+        names = list(_emission_lines.keys())
 
-    if extended:
-        return names
-    else:
-        return names[:6]
+        if self._extended:
+            return names
+        else:
+            return names[:6]
+
+    @property
+    def wavelengths(self) -> [u.Quantity]:
+        return self._aurora_line_wavelengths
+
+    @property
+    def strengths(self) -> [[float]]:
+        return self._emission_line_strengths
+
+    @property
+    def names(self) -> [str]:
+        return self._aurora_line_names
 
 
 def format_uncertainty(quantity: int | float,

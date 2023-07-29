@@ -159,6 +159,36 @@ class _FluxCalibration:
         return {'calibration_factors': calibration_factor,
                 'calibration_factors_unc': calibration_factor_unc}
 
+    def calibrate(self, data: u.Quantity, unc: u.Quantity,
+                  target_size: u.Quantity) -> (u.Quantity, u.Quantity):
+        """
+        Wrapper function to calibrate data and uncertainty arrays from
+        electrons/s to rayleighs/nm. Calibration assumes emission from a disk
+        with the angular size of the target satellite.
+
+        Parameters
+        ----------
+        data : u.Quantity
+            The data array.
+        unc : u.Quantity
+            The uncertainty array.
+        target_size : u.Quantity
+            The target solid angular size.
+
+        Returns
+        -------
+        The calibrated data and ucnertainty.
+        """
+        data /= target_size
+        unc /= target_size
+        calibrated_data = data / self.calibration_factors
+        data_nsr = unc / data
+        calibration_nsr = (self.calibration_factors_unc /
+                           self.calibration_factors)
+        calibrated_unc = np.abs(calibrated_data) * np.sqrt(
+            data_nsr ** 2 + calibration_nsr ** 2)
+        return calibrated_data.to(u.R / u.nm), calibrated_unc.to(u.R / u.nm)
+
     @property
     def calibration_factors(self) -> u.Quantity:
         return self._calibration_factors['calibration_factors']
