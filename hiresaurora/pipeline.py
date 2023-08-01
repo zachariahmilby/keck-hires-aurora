@@ -51,9 +51,7 @@ class AuroraPipeline:
 
     def run(self, trim_bottom: int, trim_top: int, aperture_radius: u.Quantity,
             average_aperture_scale: float, horizontal_offset: int or float,
-            average_trace_offset: int or float = 0.0,
-            interpolate_aperture: bool = False,
-            fill_holes: bool = False) -> None:
+            average_trace_offset: int or float = 0.0) -> None:
         """
         Run the aurora pipeline.
 
@@ -75,13 +73,6 @@ class AuroraPipeline:
             Any additional offset if the wavelength solution is off.
         average_trace_offset : int or float
             Additional vertical offset for "trace" in the average image.
-        interpolate_aperture : bool
-            If the aperture location appears to be a hole or hill, you can
-            replace it with an interpolation based on the surrounding column
-            values.
-        fill_holes : bool
-            If there are bad "holes" left over from background subtraction,
-            this will attempt to remove them.
 
         Returns
         -------
@@ -96,9 +87,7 @@ class AuroraPipeline:
                        average_aperture_scale=average_aperture_scale,
                        horizontal_offset=horizontal_offset,
                        exclude=self._exclude,
-                       average_trace_offset=average_trace_offset,
-                       interpolate_aperture=interpolate_aperture,
-                       fill_holes=fill_holes)
+                       average_trace_offset=average_trace_offset)
         self.summarize()
         elapsed_time = datetime.now() - t0
         print(f'Processing complete, time elapsed: {elapsed_time}.')

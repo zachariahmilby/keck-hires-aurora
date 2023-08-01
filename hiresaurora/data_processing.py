@@ -11,8 +11,10 @@ from lmfit.models import PolynomialModel, GaussianModel, ConstantModel
 from hiresaurora.background_subtraction import _Background
 from hiresaurora.calibration import _FluxCalibration
 from hiresaurora.ephemeris import _get_ephemeris
-from hiresaurora.general import _doppler_shift_wavelengths, AuroraLines
+from hiresaurora.general import _doppler_shift_wavelengths, AuroraLines, \
+    format_uncertainty
 from hiresaurora.graphics import make_quicklook
+from hiresaurora.observing_geometry import Geometry
 
 
 def _fit_trace(data: u.Quantity or np.ndarray,
@@ -163,6 +165,10 @@ class _ImageData:
     @property
     def angular_radius(self) -> u.Quantity:
         return self._get_ephemeris_quantity('ang_width') / 2
+
+    @property
+    def relative_velocity(self) -> u.Quantity:
+        return self._get_ephemeris_quantity('delta_rate')
 
 
 class _RawData:
@@ -368,8 +374,7 @@ class _LineData:
     def __init__(self, reduced_data_directory: str or Path,
                  aperture_radius: u.Quantity, average_aperture_scale: float,
                  horizontal_offset: int or float = 0.0, trim_top: int = 2,
-                 trim_bottom: int = 2, interpolate_aperture: bool = False,
-                 fill_holes: bool = False):
+                 trim_bottom: int = 2):
         """
         Parameters
         ----------
@@ -390,13 +395,6 @@ class _LineData:
             Number of additional rows to trim off of the bottom of the
             rectified data (the background fitting significantly improves if
             the sawtooth slit edges are excluded). The default is 2.
-        interpolate_aperture : bool
-            If the aperture location appears to be a hole or hill, you can
-            replace it with an interpolation based on the surrounding column
-            values.
-        fill_holes : bool
-            If there are bad "holes" left over from background subtraction,
-            this will attempt to remove them.
         """
         self._reduced_data_directory = Path(reduced_data_directory)
         self._aperture_radius = aperture_radius.to(u.arcsec)
@@ -406,8 +404,6 @@ class _LineData:
         self._trim_bottom = trim_bottom
         self._data = _RawData(self._reduced_data_directory)
         self._save_directory = self._parse_save_directory()
-        self._interpolate_aperture = interpolate_aperture
-        self._fill_holes = fill_holes
 
     def _parse_save_directory(self) -> Path:
         return Path(self._reduced_data_directory.parent, 'calibrated')
@@ -527,12 +523,32 @@ class _LineData:
         return hdu
 
     @staticmethod
-    def _set_primary_header(primary_hdu: fits.PrimaryHDU,
+    def _round(number: float, precision: int = 4) -> float:
+        """
+        My attempt at curbing rounding errors (like lots of 9s...).
+        """
+        return float(np.format_float_positional(number, precision=precision))
+
+    def _set_primary_header(self,
+                            primary_hdu: fits.PrimaryHDU,
                             line_name: str,
                             brightness: u.Quantity,
                             brightness_unc: u.Quantity,
                             brightness_std: u.Quantity,
-                            trace: float = None, trace_unc: float = None):
+                            trace: float = None, trace_unc: float = None,
+                            linex: [float] = None,
+                            t_corr: Time = None,
+                            lat_mag: u.Quantity = None,
+                            lon_mag: u.Quantity = None,
+                            orb_dist: u.Quantity = None,
+                            height: u.Quantity = None,
+                            lat_obs: u.Quantity = None,
+                            lon_obs: u.Quantity = None,
+                            angular_radius: u.Quantity = None,
+                            relative_velocity: u.Quantity = None,
+                            distance_to_target: u.Quantity = None,
+                            north_pole_angle: u.Quantity = None
+                            ):
         """
         Set primary extension header information (not observation-specific).
         """
@@ -544,11 +560,64 @@ class _LineData:
         primary_hdu.header.set('LINE', f'{line_name}',
                                'targeted emission line')
         if trace is not None:
-            primary_hdu.header.set('TRACEFIT', trace,
-                                   'trace fit fractional pixel')
-        if trace_unc is not None:
-            primary_hdu.header.set('TRACEUNC', trace_unc,
-                                   'trace fit fractional pixel uncertainty')
+            if trace_unc is not None:
+                trace, trace_unc = format_uncertainty(trace, trace_unc)
+                primary_hdu.header.set('TRACEFIT', trace,
+                                       'trace fit fractional pixel location')
+                primary_hdu.header.set(
+                    'TRACEUNC', trace_unc,
+                    'trace fit fractional pixel uncertainty')
+            else:
+                primary_hdu.header.set('TRACEFIT', trace,
+                                       'trace fit fractional pixel location')
+        if linex is not None:
+            for i, line in enumerate(linex):
+                primary_hdu.header.set(
+                    f'LINEPIX{i}', np.round(line, 4),
+                    'emission line fractional pixel location')
+        if t_corr is not None:
+            primary_hdu.header.set('DATECORR', t_corr.isot,
+                                   'time corrected for light travel time')
+        if lat_mag is not None:
+            primary_hdu.header.set(
+                'MAGLAT', self._round(lat_mag.value, 4),
+                f'target magnetic latitude [{lat_mag.unit}]')
+            primary_hdu.header.set(
+                'MAGLON', self._round(lon_mag.value, 4),
+                f'target magnetic east longitude [{lon_mag.unit}]')
+            primary_hdu.header.set(
+                'ORB_DIST', self._round(orb_dist.value, 4),
+                f'target orbital distance from Jupiter [{orb_dist.unit}]')
+            primary_hdu.header.set(
+                'PS_DIST', self._round(height.value, 4),
+                f'target distance from plamsa sheet [{height.unit}]')
+            primary_hdu.header.set(
+                "OBSLAT", self._round(lat_obs.value, 4),
+                f'sub-observer latitude [{lat_obs.unit}]')
+            primary_hdu.header.set(
+                "OBSLON", self._round(lon_obs.value, 4),
+                f'sub-observer east longitude [{lon_obs.unit}]')
+        if angular_radius is not None:
+            primary_hdu.header.set(
+                'ANG_RAD', self._round(angular_radius.value, 4),
+                f'target angular radius [{angular_radius.unit}]')
+        if relative_velocity is not None:
+            relative_velocity = relative_velocity.to(u.km/u.s)
+            primary_hdu.header.set(
+                'RELVLCTY', relative_velocity.value,
+                f'target relative velocity [{relative_velocity.unit}]')
+        if distance_to_target is not None:
+            distance_to_target = distance_to_target.to(u.km)
+            primary_hdu.header.set(
+                'TARGDIST', int(self._round(distance_to_target.value, 0)),
+                f'distance to target [{distance_to_target.unit}]')
+        if north_pole_angle is not None:
+            north_pole_angle = north_pole_angle.to(u.degree)
+            primary_hdu.header.insert(
+                'SKYPA',
+                ('NPANG', self._round(north_pole_angle.value, 4),
+                 f'north pole angle [{north_pole_angle.unit}]'),
+                after=True)
         primary_hdu.header.set(
             'BGHTNESS', brightness.value,
             f'retrieved brightness [{brightness.unit}]')
@@ -566,6 +635,8 @@ class _LineData:
             raw_data: u.Quantity, raw_unc: u.Quantity,
             trace_data: u.Quantity, trace_unc: u.Quantity,
             trace_fit: float, trace_fit_unc: float,
+            linex: [float], geometry: Geometry, angular_radius: u.Quantity,
+            relative_velocity: u.Quantity,
             background: u.Quantity, background_unc: u.Quantity,
             target_masks: np.ndarray, background_masks: np.ndarray,
             aperture_edges: np.ndarray,
@@ -587,7 +658,20 @@ class _LineData:
                                      brightness=brightness,
                                      brightness_unc=brightness_unc,
                                      brightness_std=brightness_std,
-                                     trace=trace_fit, trace_unc=trace_fit_unc)
+                                     trace=trace_fit, trace_unc=trace_fit_unc,
+                                     linex=linex,
+                                     angular_radius=angular_radius,
+                                     relative_velocity=relative_velocity,
+                                     t_corr=geometry.light_corrected_time,
+                                     lat_mag=geometry.magnetic_latitude,
+                                     lon_mag=geometry.magnetic_longitude,
+                                     orb_dist=geometry.orbital_distance,
+                                     height=geometry.height,
+                                     lat_obs=geometry.sub_observer_latitude,
+                                     lon_obs=geometry.sub_observer_longitude,
+                                     distance_to_target=geometry.distance,
+                                     north_pole_angle=geometry.north_pole_angle
+                                     )
             targeted_lines_hdu = self._make_image_hdu(data=line, header=None,
                                                       name='TARGETED_LINES')
             raw_hdu = self._make_image_hdu(
@@ -649,6 +733,7 @@ class _LineData:
             data_header: fits.Header,
             raw_data: u.Quantity, raw_unc: u.Quantity,
             tracefit: float,
+            angular_radius: u.Quantity,
             background: u.Quantity, background_unc: u.Quantity,
             target_masks: np.ndarray, background_masks: np.ndarray,
             aperture_edges: np.ndarray,
@@ -670,7 +755,8 @@ class _LineData:
                                      brightness=brightness,
                                      brightness_unc=brightness_unc,
                                      brightness_std=brightness_std,
-                                     trace=tracefit)
+                                     trace=tracefit,
+                                     angular_radius=angular_radius)
             targeted_lines_hdu = self._make_image_hdu(data=line,
                                                       header=None,
                                                       name='TARGETED_LINES')
@@ -760,6 +846,8 @@ class _LineData:
             self._data.science[0].doppler_shifted_wavelength_edges[order]
             [select_edges[1]])
         for data, trace in zip(self._data.science, self._data.trace):
+            geometry = Geometry(target=data.data_header['OBJECT'],
+                                observation_time=data.data_header['DATE-OBS'])
             data_selection = data.data[order][select]
             unc_selection = data.uncertainty[order][select]
             trace_data_selection = trace.data[order][select]
@@ -782,9 +870,7 @@ class _LineData:
                 mask=mask.target_mask,
                 radius=mask.aperture_radius.value,
                 spectral_scale=spectral_scale,
-                spatial_scale=spatial_scale,
-                interpolate_aperture=self._interpolate_aperture,
-                fill_holes=self._fill_holes)
+                spatial_scale=spatial_scale)
             calibrated_data, calibrated_unc = calibration.calibrate(
                 background.data, background.uncertainty,
                 target_size=mask.satellite_size)
@@ -818,6 +904,10 @@ class _LineData:
                 trace_unc=trace_unc_selection,
                 trace_fit=trace_fit,
                 trace_fit_unc=trace_fit_unc,
+                linex=horizontal_positions,
+                geometry=geometry,
+                angular_radius=mask.satellite_radius,
+                relative_velocity=data.relative_velocity,
                 background=background.best_fit,
                 background_unc=background.best_fit_uncertainty,
                 target_masks=mask.target_masks,
@@ -909,9 +999,7 @@ class _LineData:
             mask=mask.target_mask,
             radius=mask.aperture_radius.value,
             spectral_scale=spectral_scale,
-            spatial_scale=spatial_scale,
-            interpolate_aperture=self._interpolate_aperture,
-            fill_holes=self._fill_holes)
+            spatial_scale=spatial_scale)
         calibrated_data, calibrated_unc = calibration.calibrate(
             background.data, background.uncertainty,
             target_size=mask.satellite_size)
@@ -943,6 +1031,7 @@ class _LineData:
             background=background.best_fit,
             background_unc=background.best_fit_uncertainty,
             target_masks=mask.target_masks,
+            angular_radius=angular_radius,
             background_masks=mask.background_masks,
             aperture_edges=mask.edges,
             calibrated_data=calibrated_data,
@@ -962,9 +1051,7 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
                    aperture_radius: u.Quantity,
                    average_aperture_scale: float = 1.0,
                    horizontal_offset: int = 0, exclude: [int] = None,
-                   average_trace_offset: int or float = 0.0,
-                   interpolate_aperture: bool = False,
-                   fill_holes: bool = False):
+                   average_trace_offset: int or float = 0.0):
     """
     This function runs the aurora data calibration pipeline for all wavelengths
     (default O and H or extended Io set).
@@ -990,12 +1077,6 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
         Indices of observations to exclude from averaging.
     average_trace_offset : int or float
         Additional vertical offset for "trace" in the average image.
-    interpolate_aperture : bool
-        If the aperture location appears to be a hole or hill, you can replace
-        it with an interpolation based on the surrounding column values.
-    fill_holes : bool
-            If there are bad "holes" left over from background subtraction,
-            this will attempt to remove them.
     """
 
     aurora_lines = AuroraLines(extended=extended)
@@ -1004,9 +1085,7 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
                           trim_top=trim_top,
                           trim_bottom=trim_bottom,
                           aperture_radius=aperture_radius,
-                          average_aperture_scale=average_aperture_scale,
-                          interpolate_aperture=interpolate_aperture,
-                          fill_holes=fill_holes)
+                          average_aperture_scale=average_aperture_scale)
 
     lines = aurora_lines.wavelengths
     line_names = aurora_lines.names

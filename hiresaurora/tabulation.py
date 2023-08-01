@@ -59,7 +59,7 @@ class TabulatedResults:
                     val, unc = format_uncertainty(quantity=brightness,
                                                   uncertainty=uncertainty)
                     data[i, j] = f'{val} ± {unc}'
-                    snr = brightness / uncertainty
+                    snr = val / unc
                     if snr >= 2.0:
                         detected[i, j] = True
                 except KeyError:

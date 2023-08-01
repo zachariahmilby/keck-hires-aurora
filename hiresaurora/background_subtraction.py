@@ -2,11 +2,9 @@ import warnings
 
 import astropy.units as u
 import numpy as np
-from astropy.convolution import convolve, interpolate_replace_nans, \
-    Gaussian1DKernel, Gaussian2DKernel
-from astropy.utils.exceptions import AstropyUserWarning
+from astropy.convolution import convolve, Gaussian1DKernel
 from lmfit.model import Parameters
-from lmfit.models import Model
+from lmfit.models import Model, PolynomialModel
 
 
 class BackgroundFitError(Exception):
@@ -23,8 +21,7 @@ class _Background:
 
     def __init__(self, data: u.Quantity, uncertainty: u.Quantity,
                  mask: np.ndarray, radius: float, spatial_scale: float,
-                 spectral_scale: float, interpolate_aperture: bool = False,
-                 fill_holes: bool = False):
+                 spectral_scale: float,):
         """
         Parameters
         ----------
@@ -40,13 +37,6 @@ class _Background:
         spectral_scale : float
             The spectral pixel scale (probably in [arcsec/bin], but it doesn't
             matter so long as it's the same units as the spatial scale).
-        interpolate_aperture : bool
-            If the aperture location appears to be a hole or hill, you can
-            replace it with an interpolation based on the surrounding column
-            values.
-        fill_holes : bool
-            If there are bad "holes" left over from background subtraction,
-            this will attempt to remove them.
         """
         self._data = data.value
         self._uncertainty = uncertainty.value
@@ -59,18 +49,10 @@ class _Background:
         self._background = np.zeros(self._data.shape)
         self._background_unc = np.zeros(self._data.shape)
         self._fit_profile_background(kind='column')
-        self._smooth_background()
-        self._fit_whatevers_left(width=2*self._radius)
         self._fit_profile_background(kind='row')
-        self._fit_profile_background(kind='column')
-        if interpolate_aperture:
-            self._interpolate_aperture()
-        if fill_holes:
-            for i in range(3):
-                self._fill_holes()
 
     @staticmethod
-    def _get_column_profile(data: np.ndarray, width=3) -> np.ndarray:
+    def _get_column_profile(data: np.ndarray, width=2) -> np.ndarray:
         """
         Create a characteristic column profile over all columns without any
         NaNs.
@@ -91,10 +73,8 @@ class _Background:
         """
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            profile = np.mean(data, axis=0)
-            missing_columns = np.where(np.isnan(profile))[0]
-            kernel = Gaussian1DKernel(stddev=missing_columns.size)
-            profile = interpolate_replace_nans(profile, kernel)
+            ind = np.where(~np.isnan(data).any(axis=1))[0]
+            profile = np.mean(data[ind], axis=0)
         return profile
 
     @staticmethod
@@ -104,18 +84,7 @@ class _Background:
         """
         return constant + profile
 
-    def _apply_smoothing(self, data: np.ndarray, unc: np.ndarray,
-                         width: float | int = 2) -> (np.ndarray, np.ndarray):
-        """
-        Function to convolve a 2-bin-wide Gaussian smoothing kernel to the
-        fitted background and uncertainty.
-        """
-        ratio = self._spectral_scale / self._spatial_scale
-        kernel = Gaussian2DKernel(x_stddev=width, y_stddev=width * ratio)
-        data = convolve(data, kernel, boundary='extend')
-        unc = convolve(np.sqrt(unc ** 2), kernel, boundary='extend')
-        return data, unc
-
+    # noinspection DuplicatedCode
     def _fit_profile_background(self, kind: str):
         """
         Fit either a characteristic row or column profile.
@@ -161,67 +130,6 @@ class _Background:
         self._background += background
         self._background_unc = np.sqrt(self._background_unc**2
                                        + background_uncertainty**2)
-
-    def _fit_whatevers_left(self, width):
-        """
-        Do one final pass at eliminating any residual structure. Based on what
-        I think happens with Sextractor.
-        """
-        masked_data = (self._data - self._background) * self._mask
-        uncertainty = np.sqrt(self._uncertainty ** 2
-                              + self._background_unc ** 2)
-        cycle = True
-        while cycle:
-            with warnings.catch_warnings():
-                warnings.filterwarnings('error', category=AstropyUserWarning)
-                try:
-                    masked_data, uncertainty = self._apply_smoothing(
-                        data=masked_data, unc=uncertainty, width=width)
-                except AstropyUserWarning:
-                    width += 0.5
-                else:
-                    cycle = False
-        self._background += masked_data
-        self._background_unc = np.sqrt(self._background_unc ** 2
-                                       + uncertainty ** 2)
-
-    def _smooth_background(self):
-        """
-        Smooth the current form of the background and uncertainty with a
-        Gaussian kernel of a given width.
-        """
-        self._background, self._background_unc = self._apply_smoothing(
-            data=self._background, unc=self._background_unc)
-
-    def _interpolate_aperture(self):
-        """
-        Make sure the aperture isn't a hill or hole.
-        """
-        masked_data = (self._data - self._background) * self._mask
-        row_profile = np.mean(masked_data, axis=0)
-        missing_columns = np.where(np.isnan(row_profile))[0]
-        for col in missing_columns:
-            ind = np.where(np.isnan(masked_data[:, col]))[0]
-            bg_slice = self._background[:, col]
-            bg_slice[ind] = np.nan
-            kernel = Gaussian1DKernel(stddev=ind.size/2)
-            bg_slice = interpolate_replace_nans(bg_slice, kernel,
-                                                boundary='extend')
-            self._background[:, col] = bg_slice
-
-    def _fill_holes(self):
-        """
-        Use Astropy NaN interpolation to fill residual holes from fitting.
-        """
-        data = self._data - self._background
-        masked_data = data * self._mask
-        std = np.nanstd(masked_data)
-        ind = np.where(data < -std)
-        data[ind] = np.nan
-        ratio = self._spectral_scale / self._spatial_scale
-        kernel = Gaussian2DKernel(x_stddev=1, y_stddev=1*ratio)
-        data = interpolate_replace_nans(data, kernel, boundary='extend')
-        self._data = data + self._background
 
     @property
     def best_fit(self) -> u.Quantity:
