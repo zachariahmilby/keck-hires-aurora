@@ -4,7 +4,7 @@ import astropy.units as u
 import numpy as np
 from astropy.convolution import convolve, Gaussian1DKernel
 from lmfit.model import Parameters
-from lmfit.models import Model, PolynomialModel
+from lmfit.models import Model
 
 
 class BackgroundFitError(Exception):
@@ -21,7 +21,7 @@ class _Background:
 
     def __init__(self, data: u.Quantity, uncertainty: u.Quantity,
                  mask: np.ndarray, radius: float, spatial_scale: float,
-                 spectral_scale: float,):
+                 spectral_scale: float):
         """
         Parameters
         ----------
@@ -48,14 +48,13 @@ class _Background:
         self._nspa, self._nspe = self._data.shape
         self._background = np.zeros(self._data.shape)
         self._background_unc = np.zeros(self._data.shape)
-        self._fit_profile_background(kind='column')
-        self._fit_profile_background(kind='row')
+        self._fit_profile_background()
 
     @staticmethod
-    def _get_column_profile(data: np.ndarray, width=2) -> np.ndarray:
+    def _get_column_profile(data: np.ndarray, width=1) -> np.ndarray:
         """
-        Create a characteristic column profile over all columns without any
-        NaNs.
+        Create a characteristic normalized column profile over all columns
+        without any NaNs.
         """
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -63,62 +62,51 @@ class _Background:
             profile = np.nanmean(data[:, ind], axis=1)
             kernel = Gaussian1DKernel(stddev=width)
             smoothed_profile = convolve(profile, kernel, boundary='extend')
-        return smoothed_profile - np.nanmin(smoothed_profile)
+        return smoothed_profile / np.nanmax(smoothed_profile)
 
     @staticmethod
-    def _get_row_profile(data: np.ndarray) -> np.ndarray:
-        """
-        Create a characteristic row profile, interpolating over the columns
-        containing the aperture.
-        """
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            ind = np.where(~np.isnan(data).any(axis=1))[0]
-            profile = np.mean(data[ind], axis=0)
-        return profile
-
-    @staticmethod
-    def _primary_fitting_model(profile, constant):
+    def _fitting_model(profile, coefficient):
         """
         Function to fit a profile to data.
         """
-        return constant + profile
+        return coefficient * profile
 
-    # noinspection DuplicatedCode
-    def _fit_profile_background(self, kind: str):
+    def _fit_profile_background(self, window=3):
         """
-        Fit either a characteristic row or column profile.
+        Fit either a characteristic column profile.
+
+        Parameters
+        ----------
+        window : int
+            Horizontal averaging window for profiles; should be an odd number.
         """
         background = np.zeros((self._nspa, self._nspe))
         background_uncertainty = np.zeros((self._nspa, self._nspe))
         masked_data = (self._data - self._background) * self._mask
         uncertainty = np.sqrt(self._uncertainty ** 2
                               + self._background_unc ** 2)
-        model = Model(self._primary_fitting_model,
+        model = Model(self._fitting_model,
                       independent_vars=['profile'],
                       nan_policy='omit')
-        if kind == 'column':
-            profile = self._get_column_profile(masked_data)
-            n = self._nspe
-        elif kind == 'row':
-            profile = self._get_row_profile(masked_data)
-            n = self._nspa
-        else:
-            raise Exception
-        for i in range(n):
-            if kind == 'column':
-                s_ = np.s_[:, i]
-            elif kind == 'row':
-                s_ = np.s_[i]
+        profile = self._get_column_profile(masked_data)
+        dwindow = int((window - 1) / 2)
+        for i in range(self._nspe):
+            s_ = np.s_[:, i]
+            if (i > dwindow) & (i < self._nspe-dwindow-1):
+                ss_ = np.s_[:, i-dwindow:i+dwindow+1]
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', category=RuntimeWarning)
+                    data = np.nanmean(masked_data[ss_], axis=1)
+                    weights = window ** 2 / np.nansum(
+                        uncertainty[ss_] ** 2, axis=1)
             else:
-                raise Exception
-            data = masked_data[s_]
-            weights = 1 / uncertainty[s_] ** 2
+                data = masked_data[s_]
+                weights = 1 / uncertainty[s_] ** 2
             try:
                 good = np.where(~np.isnan(data))[0]
                 if len(good) > 0:
                     params = Parameters()
-                    params.add('constant', value=np.nanmin(data))
+                    params.add('coefficient', value=np.nanmax(data), min=0)
                     fit = model.fit(data[good], params=params,
                                     weights=weights[good],
                                     profile=profile[good])
