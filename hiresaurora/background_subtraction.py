@@ -100,8 +100,10 @@ class _Background:
                     weights = window ** 2 / np.nansum(
                         uncertainty[ss_] ** 2, axis=1)
             else:
-                data = masked_data[s_]
-                weights = 1 / uncertainty[s_] ** 2
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', category=RuntimeWarning)
+                    data = masked_data[s_]
+                    weights = 1 / uncertainty[s_] ** 2
             try:
                 good = np.where(~np.isnan(data))[0]
                 if len(good) > 0:

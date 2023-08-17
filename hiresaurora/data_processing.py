@@ -26,25 +26,31 @@ def _fit_trace(data: u.Quantity or np.ndarray,
     constant_model = ConstantModel()
     composite_model = gaussian_model + constant_model
     x = np.arange(data.shape[0])
-    centers = np.zeros(data.shape[1])
-    centers_unc = np.zeros_like(centers)
+    centers = np.full(data.shape[1], fill_value=np.nan)
+    centers_unc = np.full_like(centers, fill_value=np.nan)
     for i in range(data.shape[1]):
         column = data[:, i]
         weights = 1 / unc[:, i] ** 2
         if isinstance(data, u.Quantity):
             column = column.value
             weights = weights.value
-        gaussian_params = gaussian_model.guess(column, x=x)
-        constant_params = constant_model.guess(column, x=x)
-        composite_params = gaussian_params + constant_params
-        fit = composite_model.fit(
-            column, composite_params, weights=weights, x=x)
-        centers[i] = fit.params['center'].value
-        centers_unc[i] = fit.params['center'].stderr
+        good = ~np.isnan(column)
+        try:
+            gaussian_params = gaussian_model.guess(column[good], x=x[good])
+            constant_params = constant_model.guess(column[good], x=x[good])
+            composite_params = gaussian_params + constant_params
+            fit = composite_model.fit(
+                column[good], composite_params, weights=weights, x=x[good])
+            centers[i] = fit.params['center'].value
+            centers_unc[i] = fit.params['center'].stderr
+        except ValueError:
+            continue
+    good = ~np.isnan(centers)
     model = PolynomialModel(degree=0)
     x = np.arange(data.shape[1])
-    params = model.guess(centers, x=x)
-    fit = model.fit(centers, params, weights=1 / centers_unc ** 2, x=x)
+    params = model.guess(centers[good], x=x[good])
+    fit = model.fit(centers[good], params, weights=1 / centers_unc[good] ** 2,
+                    x=x[good])
     return fit.params['c0'].value, fit.params['c0'].stderr
 
 
@@ -973,14 +979,16 @@ class _LineData:
         wavelength_edge_selection = (
             self._data.science[0].doppler_shifted_wavelength_edges[order]
             [select_edges[1]])
-        data_selection = np.nanmean(
-            [data.data[order][select].value
-             for data in np.array(self._data.science)[use_data]],
-            axis=0) * unit
-        unc_selection = np.sqrt(
-            np.nansum([data.uncertainty[order][select].value ** 2
-                       for data in np.array(self._data.science)[use_data]],
-                      axis=0)) * unit / len(use_data)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            data_selection = np.nanmean(
+                [data.data[order][select].value
+                 for data in np.array(self._data.science)[use_data]],
+                axis=0) * unit
+            unc_selection = np.sqrt(
+                np.nansum([data.uncertainty[order][select].value ** 2
+                           for data in np.array(self._data.science)[use_data]],
+                          axis=0)) * unit / len(use_data)
         trace_fit = (data_selection.shape[0] - 1) / 2 + trace_offset
         horizontal_positions = self._get_line_indices(
             wavelengths=wavelength_selection,
@@ -1097,9 +1105,9 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
             line_data.run_average(line_wavelengths=line_wavelengths,
                                   line_name=line_name, exclude=exclude,
                                   trace_offset=average_trace_offset)
-        except ValueError:
-            print(f'   Failed to calibrate {line_name} data...')
-            continue
+        # except ValueError:
+        #     print(f'   Failed to calibrate {line_name} data...')
+        #     continue
         except WavelengthNotFoundError:
             print(f'      {line_name} not captured by HIRES setup! '
                   f'Skipping...')

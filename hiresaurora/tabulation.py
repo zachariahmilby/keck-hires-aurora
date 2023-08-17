@@ -36,12 +36,15 @@ class TabulatedResults:
         """
         Save a color-coded summary table.
         """
-        columns = np.array(self._aurora_lines.names)
+        columns = np.unique(
+            [f"{s.split('nm')[0]}nm" for s in results.columns
+             if s not in ['Observation Time', 'Excluded from Averaging']])
         columnlabels = [f'{c} [R]' for c in columns]
         rows = results['Observation Time'].to_numpy(dtype=str)
         rowlabels = [Time(t, format='isot').to_datetime().strftime('%H:%M:%S')
-                     for t in rows[:-1]]
-        rowlabels = np.append(rowlabels, ['Average'])
+                     for t in rows[:-2]]
+        rowlabels = np.append(rowlabels, ['Average of Above'])
+        rowlabels = np.append(rowlabels, ['Average Image'])
         data = np.zeros((rows.size, columns.size), dtype=object)
         detected = np.zeros((rows.size, columns.size), dtype=bool)
         excluded = np.zeros((rows.size, columns.size), dtype=bool)
@@ -51,19 +54,16 @@ class TabulatedResults:
                 excluded[i] = \
                     subresult['Excluded from Averaging'].to_numpy(dtype=bool)
             for j, column in enumerate(columns):
-                try:
-                    brightness = subresult[f'{column} [R]'].to_numpy()[0]
-                    uncertainty = np.min(
-                        [subresult[f'{column} Unc. [R]'].to_numpy()[0],
-                         subresult[f'{column} Std. [R]'].to_numpy()[0]])
-                    val, unc = format_uncertainty(quantity=brightness,
-                                                  uncertainty=uncertainty)
-                    data[i, j] = f'{val} ± {unc}'
-                    snr = val / unc
-                    if snr >= 2.0:
-                        detected[i, j] = True
-                except KeyError:
-                    data[i, j] = 'none'
+                brightness = subresult[f'{column} [R]'].to_numpy()[0]
+                uncertainty = np.min(
+                    [subresult[f'{column} Unc. [R]'].to_numpy()[0],
+                     subresult[f'{column} Std. [R]'].to_numpy()[0]])
+                val, unc = format_uncertainty(quantity=brightness,
+                                              uncertainty=uncertainty)
+                data[i, j] = f'{val} ± {unc}'
+                snr = val / unc
+                if snr >= 2.0:
+                    detected[i, j] = True
         cell_colors = np.full(data.shape, fill_value='red', dtype=object)
         cell_colors[np.where(detected)] = 'green'
 
@@ -102,6 +102,36 @@ class TabulatedResults:
         savename = Path(self._calibrated_data_path.parent, 'results.pdf')
         plt.savefig(savename)
 
+    # noinspection DuplicatedCode
+    def _calculate_averages_of_individuals(
+            self, results: pd.DataFrame) -> pd.DataFrame:
+        new_data = pd.DataFrame()
+        rows = results['Observation Time'].to_numpy()
+        rows = np.insert(rows, -1, 'Average of Above')
+        new_data['Observation Time'] = rows
+        good = np.where(
+            results['Excluded from Averaging'].to_numpy()[:-1] == 0)[0]
+        n = good.size
+        for name in self._aurora_lines.names:
+            try:
+                brightnesses = results[f'{name} [R]'].to_numpy()
+                avg_brightness = np.mean(brightnesses[good])
+                brightnesses = np.insert(brightnesses, -1, avg_brightness)
+                new_data[f'{name} [R]'] = np.round(brightnesses, 4)
+                uncertainties = results[f'{name} Unc. [R]'].to_numpy()
+                avg_uncertainty = np.sqrt(np.sum(uncertainties[good]**2)) / n
+                uncertainties = np.insert(uncertainties, -1, avg_uncertainty)
+                new_data[f'{name} Unc. [R]'] = np.round(uncertainties, 4)
+                stddevs = results[f'{name} Std. [R]'].to_numpy()
+                avg_stddev = np.sqrt(np.sum(stddevs[good] ** 2)) / n
+                stddevs = np.insert(stddevs, -1, avg_stddev)
+                new_data[f'{name} Std. [R]'] = np.round(stddevs, 4)
+            except KeyError:
+                continue
+        new_data['Excluded from Averaging'] = np.insert(
+            results['Excluded from Averaging'].to_numpy(), -1, 0)
+        return new_data
+
     def run(self):
         """
         Generate and save the tabulated data as a CSV.
@@ -125,7 +155,7 @@ class TabulatedResults:
                     primary_header = hdul['PRIMARY'].header
                     data_header = hdul['CALIBRATED'].header
                     if file.name == 'average.fits.gz':
-                        times.append('Average')
+                        times.append('Average Image')
                     else:
                         times.append(data_header['DATE-OBS'])
                     brightness = primary_header['BGHTNESS']
@@ -144,6 +174,7 @@ class TabulatedResults:
             results[f'{name} Unc. [R]'] = uncertainties
             results[f'{name} Std. [R]'] = stddevs
         results['Excluded from Averaging'] = excluded
+        results = self._calculate_averages_of_individuals(results=results)
         results.to_csv(savename, index=False, sep=',')
         self._excluded = excluded
 

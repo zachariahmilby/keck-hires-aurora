@@ -30,65 +30,59 @@ class _EmissionLine:
     """
     Class to hold emission line information.
     """
-    def __init__(self, wavelengths: u.Quantity, strengths: [float | int]):
+    def __init__(self, wavelengths: u.Quantity):
         self._wavelengths = wavelengths
-        self._strengths = strengths
 
     @property
     def wavelengths(self) -> u.Quantity:
         return self._wavelengths
 
-    @property
-    def strengths(self) -> [float | int]:
-        return self._strengths
-
 
 _emission_lines = {
-    '[O I] 557.7 nm': _EmissionLine(wavelengths=[557.7339] * u.nm,
-                                    strengths=[1.]),
-    '[O I] 630.0 nm': _EmissionLine(wavelengths=[630.0304] * u.nm,
-                                    strengths=[1.]),
-    '[O I] 636.4 nm': _EmissionLine(wavelengths=[636.3776] * u.nm,
-                                    strengths=[1.]),
+    '[K I] 364.9 nm': _EmissionLine(wavelengths=[364.8985] * u.nm),
+    '[Na I] 342.7 nm': _EmissionLine(wavelengths=[342.6858] * u.nm),
+    '[Na I] 388.4 nm': _EmissionLine(wavelengths=[388.3903] * u.nm),
+    '[S II] 406.9 nm': _EmissionLine(wavelengths=[406.8600, 407.6349] * u.nm),
+    '[S II] 407.6 nm': _EmissionLine(wavelengths=[407.6349] * u.nm),
+    'H I 434.0 nm': _EmissionLine(
+        wavelengths=[434.0431, 434.0500, 434.0427, 434.0494, 434.0496] * u.nm),
+    '[S I] 458.9 nm': _EmissionLine(wavelengths=[458.926] * u.nm),
+    '[C I] 462.7 nm': _EmissionLine(wavelengths=[462.7344] * u.nm),
+    '[K I] 464.2 nm': _EmissionLine(wavelengths=[464.2373] * u.nm),
+    'H I 486.1 nm': _EmissionLine(
+        wavelengths=[486.1288, 486.1375, 486.1279, 486.1362, 486.1365] * u.nm),
+    '[O I] 557.7 nm': _EmissionLine(wavelengths=[557.7339] * u.nm),
+    'Na I 589.0 nm': _EmissionLine(wavelengths=[588.9950] * u.nm),
+    'Na I 589.6 nm': _EmissionLine(wavelengths=[589.5924] * u.nm),
+    '[O I] 630.0 nm': _EmissionLine(wavelengths=[630.0304] * u.nm),
+    '[O I] 636.4 nm': _EmissionLine(wavelengths=[636.3776] * u.nm),
+    'H I 656.3 nm': _EmissionLine(
+        wavelengths=[656.2752, 656.2909, 656.2710, 656.2852, 656.2867] * u.nm),
+    '[S II] 671.6 nm': _EmissionLine(wavelengths=[671.6338] * u.nm),
+    '[S II] 673.1 nm': _EmissionLine(wavelengths=[673.0713] * u.nm),
+    '[Na I] 751.5 nm': _EmissionLine(
+        wavelengths=[750.7464, 751.7172, 752.0333] * u.nm),
+    'K I 766.4 nm': _EmissionLine(wavelengths=[766.4899] * u.nm),
+    'K I 769.9 nm': _EmissionLine(wavelengths=[769.8965] * u.nm),
+    '[O II] 731.9 nm': _EmissionLine(wavelengths=[731.8811, 731.9878] * u.nm),
+    '[O II] 733.0 nm': _EmissionLine(wavelengths=[732.9554, 733.0624] * u.nm),
+    '[S I] 772.5 nm': _EmissionLine(wavelengths=[772.5046] * u.nm),
     'O I 777.4 nm': _EmissionLine(
-        wavelengths=[777.1944, 777.4166, 777.5388] * u.nm,
-        strengths=[1., 5/6, 5/6]),
+        wavelengths=[777.1944, 777.4166, 777.5388] * u.nm),
+    'Na I 818.3 nm': _EmissionLine(wavelengths=[818.3256] * u.nm),
+    'Na I 819.5 nm': _EmissionLine(wavelengths=[819.4790, 819.4824] * u.nm),
+    'Cl I 837.6 nm': _EmissionLine(wavelengths=[837.5943] * u.nm),
     'O I 844.6 nm': _EmissionLine(
-        wavelengths=[844.6247, 844.6359, 844.6758] * u.nm,
-        strengths=[5/6, 1., 1.]),
-    'H I 656.3 nm': _EmissionLine(wavelengths=[656.2852] * u.nm,
-                                  strengths=[1.]),
-    'Na I 589.0 nm': _EmissionLine(wavelengths=[588.9950] * u.nm,
-                                   strengths=[1.]),
-    'Na I 589.6 nm': _EmissionLine(wavelengths=[589.5924] * u.nm,
-                                   strengths=[1.]),
-    'Na I 818.3 nm': _EmissionLine(wavelengths=[818.3256] * u.nm,
-                                   strengths=[1.]),
-    'Na I 819.5 nm': _EmissionLine(wavelengths=[819.4790, 819.4824] * u.nm,
-                                   strengths=[1/11, 1.]),
-    'K I 766.4 nm': _EmissionLine(wavelengths=[766.4899] * u.nm,
-                                  strengths=[1.]),
-    'K I 769.9 nm': _EmissionLine(wavelengths=[769.8965] * u.nm,
-                                  strengths=[1.]),
-    '[S I] 772.5 nm': _EmissionLine(wavelengths=[772.5046] * u.nm,
-                                    strengths=[1.]),
-    'S I 921.3 nm': _EmissionLine(wavelengths=[921.2865] * u.nm,
-                                  strengths=[1.]),
-    'S I 922.8 nm': _EmissionLine(wavelengths=[922.8092] * u.nm,
-                                  strengths=[1]),
-    'S I 923.8 nm': _EmissionLine(wavelengths=[923.7538] * u.nm,
-                                  strengths=[1.]),
-    '[O II] 731.9 nm': _EmissionLine(wavelengths=[731.8811, 731.9878] * u.nm,
-                                     strengths=[1., 1.95/6.82]),
-    '[O II] 733.0 nm': _EmissionLine(wavelengths=[732.9554, 733.0624] * u.nm,
-                                     strengths=[1., 1.]),
-    '[S II] 671.6 nm': _EmissionLine(wavelengths=[671.6338] * u.nm,
-                                     strengths=[1.]),
-    '[S II] 673.1 nm': _EmissionLine(wavelengths=[673.0713] * u.nm,
-                                     strengths=[1.]),
-    'Cl I 837.6 nm': _EmissionLine(wavelengths=[837.5943] * u.nm,
-                                   strengths=[1.]),
+        wavelengths=[844.6247, 844.6359, 844.6758] * u.nm),
+    '[C I] 872.7 nm': _EmissionLine(wavelengths=[872.7131] * u.nm),
+    'S I 921.3 nm': _EmissionLine(wavelengths=[921.2865] * u.nm),
+    'S I 922.8 nm': _EmissionLine(wavelengths=[922.8092] * u.nm),
+    'S I 923.8 nm': _EmissionLine(wavelengths=[923.7538] * u.nm,),
 }
+
+
+icy_satellite_lines = ['[O I] 557.7 nm', '[O I] 630.0 nm', '[O I] 636.4 nm',
+                       'H I 656.3 nm', 'O I 777.4 nm', 'O I 844.6 nm']
 
 
 class AuroraLines:
@@ -104,7 +98,6 @@ class AuroraLines:
         """
         self._extended = extended
         self._aurora_line_wavelengths = self._get_aurora_line_wavelengths()
-        self._emission_line_strengths = self._get_emission_line_strengths()
         self._aurora_line_names = self._get_aurora_line_names()
 
     def __str__(self):
@@ -123,26 +116,13 @@ class AuroraLines:
         to keep closely-spaced doublets and triplets together.
         """
 
-        wavelengths = [_emission_lines[key].wavelengths
-                       for key in _emission_lines.keys()]
-
         if self._extended:
-            return wavelengths
+            return [_emission_lines[key].wavelengths
+                    for key in _emission_lines.keys()]
         else:
-            return wavelengths[:6]
-
-    def _get_emission_line_strengths(self) -> [[float]]:
-        """
-        Approximate line strengths based on emission probabilities (Einstein A
-        coefficients).
-        """
-        strengths = [_emission_lines[key].strengths
-                     for key in _emission_lines.keys()]
-
-        if self._extended:
-            return strengths
-        else:
-            return strengths[:6]
+            return [_emission_lines[key].wavelengths
+                    for key in _emission_lines.keys()
+                    if key in icy_satellite_lines]
 
     def _get_aurora_line_names(self) -> [str]:
         """
@@ -150,20 +130,15 @@ class AuroraLines:
         notation (I for neutral, II for singly-ionized, etc., with square
         brackets for forbidden transitions).
         """
-        names = list(_emission_lines.keys())
 
         if self._extended:
-            return names
+            return list(_emission_lines.keys())
         else:
-            return names[:6]
+            return icy_satellite_lines
 
     @property
     def wavelengths(self) -> [u.Quantity]:
         return self._aurora_line_wavelengths
-
-    @property
-    def strengths(self) -> [[float]]:
-        return self._emission_line_strengths
 
     @property
     def names(self) -> [str]:
