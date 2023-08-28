@@ -119,7 +119,7 @@ class TabulatedResults:
                     cells[i+1, j].set_facecolor('green')
                 else:
                     cells[i+1, j].set_facecolor('red')
-        savename = Path(self._calibrated_data_path.parent, 'results.pdf')
+        savename = Path(self._calibrated_data_path, 'results.pdf')
         plt.savefig(savename)
 
     # noinspection DuplicatedCode
@@ -175,7 +175,7 @@ class TabulatedResults:
         """
         Generate and save the tabulated data as a CSV.
         """
-        savename = Path(self._calibrated_data_path.parent, 'results.csv')
+        savename = Path(self._calibrated_data_path, 'results.csv')
         results = pd.DataFrame()
         excluded = None
         for name in self._aurora_lines.names:

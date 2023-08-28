@@ -79,7 +79,6 @@ def make_quicklook(file_path: Path):
         width = dunit * n_spe / aspect_ratio
         height += 4 * dunit
         width += 2 * dunit
-        print(width, height)
         fig, axes = plt.subplots(4, figsize=(width, height),
                                  layout='constrained', clear=True)
         [axis.xaxis.set_major_locator(ticker.NullLocator()) for axis in axes]

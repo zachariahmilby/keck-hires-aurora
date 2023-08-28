@@ -209,44 +209,45 @@ class FuzzyQuantity:
         right = ''
         power = ''
         unit = ''
-        if np.isnan(self._formatted_value) or np.isnan(self._formatted_unc):
+        if (np.isnan(float(self._formatted_value))
+                or np.isnan(float(self._formatted_unc))):
             value = 'nan'
             unc = 'nan'
         elif (self._scale == 100) and self._precision >= 2:
             fmt = self._precision - 2
-            value = f'{self._formatted_value:.{fmt}f}'
-            unc = f'{self._formatted_unc:.{fmt}f}'
+            value = f'{float(self._formatted_value):.{fmt}f}'
+            unc = f'{float(self._formatted_unc):.{fmt}f}'
         elif (self._scale == 100) and self._precision < 2:
-            value = f'{self._formatted_value:.0f}'
-            unc = f'{self._formatted_unc:.0f}'
+            value = f'{float(self._formatted_value):.0f}'
+            unc = f'{float(self._formatted_unc):.0f}'
         elif (self._scale == 10) and self._precision >= 1:
             fmt = self._precision - 1
-            value = f'{self._formatted_value:.{fmt}f}'
-            unc = f'{self._formatted_unc:.{fmt}f}'
+            value = f'{float(self._formatted_value):.{fmt}f}'
+            unc = f'{float(self._formatted_unc):.{fmt}f}'
         elif (self._scale == 10) and self._precision < 1:
-            value = f'{self._formatted_value:.0f}'
-            unc = f'{self._formatted_unc:.0f}'
+            value = f'{float(self._formatted_value):.0f}'
+            unc = f'{float(self._formatted_unc):.0f}'
         elif (self._scale == 1) and self._precision > 0:
             fmt = self._precision
-            value = f'{self._formatted_value:.{fmt}f}'
-            unc = f'{self._formatted_unc:.{fmt}f}'
+            value = f'{float(self._formatted_value):.{fmt}f}'
+            unc = f'{float(self._formatted_unc):.{fmt}f}'
         elif (self._scale == 1) and self._precision == 0:
-            value = f'{self._formatted_value:.0f}'
-            unc = f'{self._formatted_unc:.0f}'
+            value = f'{float(self._formatted_value):.0f}'
+            unc = f'{float(self._formatted_unc):.0f}'
         elif (self._scale == 0.1) and self._precision >= 1:
             fmt = self._precision + 1
-            value = f'{self._formatted_value:.{fmt}f}'
-            unc = f'{self._formatted_unc:.{fmt}f}'
+            value = f'{float(self._formatted_value):.{fmt}f}'
+            unc = f'{float(self._formatted_unc):.{fmt}f}'
         elif (self._scale == 0.1) and self._precision == 0:
-            value = f'{self._formatted_value:.1f}'
-            unc = f'{self._formatted_unc:.1f}'
+            value = f'{float(self._formatted_value):.1f}'
+            unc = f'{float(self._formatted_unc):.1f}'
         elif (self._scale == 0.01) and self._precision >= 1:
             fmt = self._precision + 2
-            value = f'{self._formatted_value:.{fmt}f}'
-            unc = f'{self._formatted_unc:.{fmt}f}'
+            value = f'{float(self._formatted_value):.{fmt}f}'
+            unc = f'{float(self._formatted_unc):.{fmt}f}'
         elif (self._scale == 0.01) and self._precision == 0:
-            value = f'{self._formatted_value:.2f}'
-            unc = f'{self._formatted_unc:.2f}'
+            value = f'{float(self._formatted_value):.2f}'
+            unc = f'{float(self._formatted_unc):.2f}'
         else:
             left = '('
             right = ')'
@@ -254,8 +255,8 @@ class FuzzyQuantity:
                 fmt = self._precision + self._unc_decimals
             else:
                 fmt = self._precision
-            unc = f'{self._formatted_unc / self._scale:.{fmt}f}'
-            value = f'{self._formatted_value / self._scale:.{fmt}f}'
+            unc = f'{float(self._formatted_unc) / self._scale:.{fmt}f}'
+            value = f'{float(self._formatted_value) / self._scale:.{fmt}f}'
             exponent = f'{int(self._magnitude)}'
             for key, val in self._superscripts.items():
                 exponent = exponent.replace(key, val)
@@ -297,8 +298,8 @@ class FuzzyQuantity:
         return precision, extra
 
     def _parse_numbers(self) -> (float, float):
-        value = float(f'{self._value:.{self._precision}e}')
-        unc = float(f'{self._unc:.{self._unc_decimals}e}')
+        value = f'{self._value:.{self._precision}e}'
+        unc = f'{self._unc:.{self._unc_decimals}e}'
         return value, unc
 
     def _convert_to_latex(self) -> str:
@@ -339,11 +340,11 @@ class FuzzyQuantity:
         return int(self._magnitude)
 
     @property
-    def value_formatted(self) -> float:
+    def value_formatted(self) -> str:
         return self._formatted_value
 
     @property
-    def uncertainty_formatted(self) -> float:
+    def uncertainty_formatted(self) -> str:
         return self._formatted_unc
 
     @property
@@ -361,8 +362,3 @@ class FuzzyQuantity:
     @property
     def latex(self) -> str:
         return self._convert_to_latex()
-
-
-if __name__ == "__main__":
-    fuzz = FuzzyQuantity(value=1.2, uncertainty=np.nan)
-    print(fuzz.uncertainty_printable)
