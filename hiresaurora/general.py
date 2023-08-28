@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import astropy.constants as c
@@ -145,75 +146,223 @@ class AuroraLines:
         return self._aurora_line_names
 
 
-def format_uncertainty(quantity: int | float,
-                       uncertainty: int | float) -> (float, float):
+class FuzzyQuantity:
     """
-    Reformats a quantity and its corresponding uncertainty to a proper number
-    of decimal places. For uncertainties starting with 1, it allows two
-    significant digits in the uncertainty. For 2-9, it allows only one. It
-    scales the value to match the precision of the uncertainty.
-
-    Parameters
-    ----------
-    quantity : float
-        A measured quantity.
-    uncertainty : float
-        The measured quantity's uncertainty.
-
-    Returns
-    -------
-    The correctly-formatted value and uncertainty.
-
-    Examples
-    --------
-    Often fitting algorithms will report uncertainties with way more precision
-    than appropriate:
-    >>> format_uncertainty(1.023243, 0.563221)
-    (1.0, 0.6)
-
-    If the uncertainty is larger than 1.9, it returns the numbers as
-    appropriately-rounded integers instead of floats, to avoid giving the
-    impression of greater precision than really exists:
-    >>> format_uncertainty(134523, 122)
-    (134520, 120)
-
-    It can handle positive or negative quantities (but uncertainties should
-    always be positive by definition):
-    >>> format_uncertainty(-10.2, 1.1)
-    (-10.2, 1.1)
-
-    >>> format_uncertainty(10.2, -2.1)
-    Traceback (most recent call last):
-     ...
-    ValueError: Uncertainty must be a positive number.
-
-    If the uncertainty is larger than the value, the precision is still set by
-    the uncertainty.
-    >>> format_uncertainty(0.023, 4.322221)
-    (0, 4)
+    A class for proper formatting of values with uncertainties. I've only
+    tested this on single numbers/quantities with associated uncertainty. I
+    don't believe it will work with arrays, besides, each entry in an array
+    might have a different formatting anyway, and this is really only useful
+    when you are printing out uncerainties or otherwise reporting them in
+    print.
     """
-    if np.sign(uncertainty) == -1.0:
-        raise ValueError('Uncertainty must be a positive number.')
-    if f'{uncertainty:#.1e}'[0] == '1':
-        unc = float(f'{uncertainty:#.1e}')
-        one_more = 1
-        order = int(f'{uncertainty:#.1e}'.split('e')[1])
-    else:
-        unc = float(f'{uncertainty:#.0e}')
-        one_more = 0
-        order = int(f'{uncertainty:#.0e}'.split('e')[1])
-    mag_quantity = int(f'{quantity:.3e}'.split('e')[1])
-    mag_uncertainty = int(f'{uncertainty:.3e}'.split('e')[1])
-    mag_diff = mag_quantity - mag_uncertainty
-    if mag_diff < 0:
-        fmt = one_more
-    else:
-        fmt = mag_diff + one_more
-    val = f'{quantity:.{fmt}e}'
-    if (np.sign(order) == -1) or ((order == 0) & (one_more == 1)):
-        return float(val), float(unc)
-    else:
-        if int(float(unc)) == 0:
-            return '---', '---'
+    _superscripts = {'0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+                     '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+                     '+': '⁺', '-': '⁻'}
+
+    def __init__(self, value: int or float or u.Quantity,
+                 uncertainty: int or float or u.Quantity):
+        """
+        This should work for values and uncertainties that are ints, floats or
+        Astropy Quantities (wih associated units). If either is an Astropy
+        Quantity object, the cother uncertainty must also be a Quantity object
+        with equivalent units (so, value in meters and uncertainty in
+        centimeters is fine, but value in ergs and uncertainty in Watts is
+        not).
+
+        If either is a NaN, both are returned as NaNs.
+
+        Parameters
+        ----------
+        value : int or float or u.Quantity
+            A measured value.
+        uncertainty : int or float or u.Quantity
+            The measured value's uncertainty.
+        """
+        if (isinstance(value, u.Quantity) and
+                isinstance(uncertainty, u.Quantity)):
+            self._check_units(value=value, uncertainty=uncertainty)
+            self._value = float(value.value)
+            self._unc = float(uncertainty.to(value.unit).value)
+            self._unit = value.unit
         else:
-            return int(float(val)), int(float(unc))
+            self._value = float(value)
+            self._unc = float(uncertainty)
+            self._unit = None
+        if np.isnan(self._value) or np.isnan(self._unc):
+            self._formatted_value = np.nan
+            self._formatted_unc = np.nan
+            self._substring_value, self._substring_unc = 'nan', 'nan'
+        else:
+            self._check_uncertainty_sign()
+            self._value_magnitude, self._unc_magnitude = \
+                self._get_magnitudes()
+            self._magnitude = np.max(
+                [self._value_magnitude, self._unc_magnitude])
+            self._scale = 10 ** self._magnitude
+            self._precision, self._unc_decimals = self._get_precision()
+            self._formatted_value, self._formatted_unc = self._parse_numbers()
+            self._substring_value, self._substring_unc = \
+                self._make_sub_strings()
+
+    def __str__(self):
+        left = ''
+        right = ''
+        power = ''
+        unit = ''
+        if np.isnan(self._formatted_value) or np.isnan(self._formatted_unc):
+            value = 'nan'
+            unc = 'nan'
+        elif (self._scale == 100) and self._precision >= 2:
+            fmt = self._precision - 2
+            value = f'{self._formatted_value:.{fmt}f}'
+            unc = f'{self._formatted_unc:.{fmt}f}'
+        elif (self._scale == 100) and self._precision < 2:
+            value = f'{self._formatted_value:.0f}'
+            unc = f'{self._formatted_unc:.0f}'
+        elif (self._scale == 10) and self._precision >= 1:
+            fmt = self._precision - 1
+            value = f'{self._formatted_value:.{fmt}f}'
+            unc = f'{self._formatted_unc:.{fmt}f}'
+        elif (self._scale == 10) and self._precision < 1:
+            value = f'{self._formatted_value:.0f}'
+            unc = f'{self._formatted_unc:.0f}'
+        elif (self._scale == 1) and self._precision > 0:
+            fmt = self._precision
+            value = f'{self._formatted_value:.{fmt}f}'
+            unc = f'{self._formatted_unc:.{fmt}f}'
+        elif (self._scale == 1) and self._precision == 0:
+            value = f'{self._formatted_value:.0f}'
+            unc = f'{self._formatted_unc:.0f}'
+        elif (self._scale == 0.1) and self._precision >= 1:
+            fmt = self._precision + 1
+            value = f'{self._formatted_value:.{fmt}f}'
+            unc = f'{self._formatted_unc:.{fmt}f}'
+        elif (self._scale == 0.1) and self._precision == 0:
+            value = f'{self._formatted_value:.1f}'
+            unc = f'{self._formatted_unc:.1f}'
+        elif (self._scale == 0.01) and self._precision >= 1:
+            fmt = self._precision + 2
+            value = f'{self._formatted_value:.{fmt}f}'
+            unc = f'{self._formatted_unc:.{fmt}f}'
+        elif (self._scale == 0.01) and self._precision == 0:
+            value = f'{self._formatted_value:.2f}'
+            unc = f'{self._formatted_unc:.2f}'
+        else:
+            left = '('
+            right = ')'
+            if self._value_magnitude < self._unc_magnitude:
+                fmt = self._precision + self._unc_decimals
+            else:
+                fmt = self._precision
+            unc = f'{self._formatted_unc / self._scale:.{fmt}f}'
+            value = f'{self._formatted_value / self._scale:.{fmt}f}'
+            exponent = f'{int(self._magnitude)}'
+            for key, val in self._superscripts.items():
+                exponent = exponent.replace(key, val)
+            power = f' × 10{exponent}'
+        if self._unit is not None:
+            left = '('
+            right = ')'
+            unit = f" {self._unit.to_string('fits')}"
+            for key, val in self._superscripts.items():
+                unit = unit.replace(key, val)
+        print_str = f'{left}{value} ± {unc}{right}{power}{unit}'
+        return print_str
+
+    @staticmethod
+    def _check_units(value: u.Quantity, uncertainty: u.Quantity):
+        try:
+            uncertainty.to(value.unit)
+        except u.UnitConversionError:
+            raise Exception(
+                'Value and uncertainty must have equivalent units!')
+
+    def _check_uncertainty_sign(self):
+        if np.sign(self._unc) == -1.0:
+            raise ValueError('Uncertainty must be a positive number.')
+
+    def _get_magnitudes(self) -> (int, int):
+        value_magnitude = np.floor(np.log10(np.abs(self._value)))
+        uncertainty_magnitude = np.floor(np.log10(np.abs(self._unc)))
+        return value_magnitude, uncertainty_magnitude
+
+    def _get_precision(self) -> (int, int):
+        unc = f'{self._unc:.1e}'.split('e')[0]
+        if unc[0] == '1':
+            extra = 1
+        else:
+            extra = 0
+        magnitude_difference = self._value_magnitude - self._unc_magnitude
+        precision = np.max([int(magnitude_difference + extra), 0])
+        return precision, extra
+
+    def _parse_numbers(self) -> (float, float):
+        value = float(f'{self._value:.{self._precision}e}')
+        unc = float(f'{self._unc:.{self._unc_decimals}e}')
+        return value, unc
+
+    def _convert_to_latex(self) -> str:
+        string = self.__str__()
+        exponent = f'{int(self._magnitude)}'
+        for key, val in self._superscripts.items():
+            exponent = exponent.replace(key, val)
+        power = f' × 10{exponent}'
+        latex_power = fr' \times 10^{{{int(self._magnitude)}}}'
+        string = string.replace(power, latex_power)
+        string = string.replace('±', r'\pm')
+        if self._unit is not None:
+            unit_str = self._unit.to_string('latex_inline').replace('$', '')
+            string = string.replace(f' {self._unit}', fr'\,{unit_str}')
+        return string
+
+    def _make_sub_strings(self) -> (str, str):
+        string = self.__str__().replace('(', '').replace(')', '')
+        parts = re.split(' ± | × ', string)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+        elif len(parts) == 3:
+            return f'{parts[0]} × {parts[2]}', f'{parts[1]} × {parts[2]}'
+        elif len(parts) == 4:
+            return f'{parts[0]} × {parts[2]} {parts[3]}', \
+                   f'{parts[1]} × {parts[2]} {parts[3]}'
+
+    @property
+    def value(self) -> float:
+        return self._value
+
+    @property
+    def uncertainty(self) -> float:
+        return self._unc
+
+    @property
+    def magnitude(self) -> int:
+        return int(self._magnitude)
+
+    @property
+    def value_formatted(self) -> float:
+        return self._formatted_value
+
+    @property
+    def uncertainty_formatted(self) -> float:
+        return self._formatted_unc
+
+    @property
+    def value_printable(self) -> str:
+        return self._substring_value
+
+    @property
+    def uncertainty_printable(self) -> str:
+        return self._substring_unc
+
+    @property
+    def printable(self) -> str:
+        return self.__str__()
+
+    @property
+    def latex(self) -> str:
+        return self._convert_to_latex()
+
+
+if __name__ == "__main__":
+    fuzz = FuzzyQuantity(value=1.2, uncertainty=np.nan)
+    print(fuzz.uncertainty_printable)

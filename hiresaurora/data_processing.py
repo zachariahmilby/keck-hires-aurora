@@ -12,9 +12,13 @@ from hiresaurora.background_subtraction import _Background
 from hiresaurora.calibration import _FluxCalibration
 from hiresaurora.ephemeris import _get_ephemeris
 from hiresaurora.general import _doppler_shift_wavelengths, AuroraLines, \
-    format_uncertainty
+    FuzzyQuantity
 from hiresaurora.graphics import make_quicklook
 from hiresaurora.observing_geometry import Geometry
+
+
+class TraceFitError(Exception):
+    pass
 
 
 def _fit_trace(data: u.Quantity or np.ndarray,
@@ -28,30 +32,38 @@ def _fit_trace(data: u.Quantity or np.ndarray,
     x = np.arange(data.shape[0])
     centers = np.full(data.shape[1], fill_value=np.nan)
     centers_unc = np.full_like(centers, fill_value=np.nan)
-    for i in range(data.shape[1]):
-        column = data[:, i]
-        weights = 1 / unc[:, i] ** 2
-        if isinstance(data, u.Quantity):
-            column = column.value
-            weights = weights.value
-        good = ~np.isnan(column)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        for i in range(data.shape[1]):
+            column = data[:, i]
+            weights = 1 / unc[:, i] ** 2
+            if isinstance(data, u.Quantity):
+                column = column.value
+                weights = weights.value
+            good = ~np.isnan(column)
+            if len(good) < data.shape[0] - 3:  # skip if more than 3 NaNs
+                continue
+            try:
+                gaussian_params = gaussian_model.guess(column[good], x=x[good])
+                constant_params = constant_model.guess(column[good], x=x[good])
+                composite_params = gaussian_params + constant_params
+                fit = composite_model.fit(
+                    column[good], composite_params, weights=weights[good],
+                    x=x[good], nan_policy='omit')
+                centers[i] = fit.params['center'].value
+                centers_unc[i] = fit.params['center'].stderr
+            except (ValueError, IndexError, TypeError):
+                raise TraceFitError()
         try:
-            gaussian_params = gaussian_model.guess(column[good], x=x[good])
-            constant_params = constant_model.guess(column[good], x=x[good])
-            composite_params = gaussian_params + constant_params
-            fit = composite_model.fit(
-                column[good], composite_params, weights=weights, x=x[good])
-            centers[i] = fit.params['center'].value
-            centers_unc[i] = fit.params['center'].stderr
-        except ValueError:
-            continue
-    good = ~np.isnan(centers)
-    model = PolynomialModel(degree=0)
-    x = np.arange(data.shape[1])
-    params = model.guess(centers[good], x=x[good])
-    fit = model.fit(centers[good], params, weights=1 / centers_unc[good] ** 2,
-                    x=x[good])
-    return fit.params['c0'].value, fit.params['c0'].stderr
+            good = ~np.isnan(centers) & ~np.isnan(centers_unc)
+            model = PolynomialModel(degree=0)
+            x = np.arange(data.shape[1])
+            params = model.guess(centers[good], x=x[good])
+            fit = model.fit(centers[good], params,
+                            weights=1/centers_unc[good] ** 2, x=x[good])
+        except (ValueError, IndexError, TypeError):
+            raise TraceFitError()
+        return fit.params['c0'].value, fit.params['c0'].stderr
 
 
 class WavelengthNotFoundError(Exception):
@@ -265,6 +277,8 @@ class _Mask:
             The angular radius of the target satellite.
         """
         self._data = data
+        if trace_center == 'error':
+            trace_center = data.shape[0] / 2
         self._trace_center = trace_center
         self._horizontal_positions = horizontal_positions
         self._horizontal_offset = horizontal_offset
@@ -379,8 +393,8 @@ class _LineData:
     """
     def __init__(self, reduced_data_directory: str or Path,
                  aperture_radius: u.Quantity, average_aperture_scale: float,
-                 horizontal_offset: int or float = 0.0, trim_top: int = 2,
-                 trim_bottom: int = 2):
+                 horizontal_offset: int or float or dict = 0.0,
+                 trim_top: int = 2, trim_bottom: int = 2):
         """
         Parameters
         ----------
@@ -392,7 +406,12 @@ class _LineData:
         average_aperture_scale : float
             Factor to scale the aperture radius by for the average images.
         horizontal_offset : int or float
-            Any additional offset if the wavelength solution is off.
+            Any additional offset if the wavelength solution is off. If an int
+            or float, it will apply to all wavelengths. If it's a dict, then it
+            will only apply to the transition indicated in the key. For
+            example, it could be `{'[O I] 557.7 nm': -3}`, which would offset
+            the wavelength solution for the retrieval of the 557.7 nm [O I]
+            brightness by -3 pixels.
         trim_top : int
             Number of additional rows to trim off the top of the rectified
             data (the background fitting significantly improves if the sawtooth
@@ -426,13 +445,13 @@ class _LineData:
         """
         lefts = []
         rights = []
+        left_bound = np.min(line_wavelengths) - dwavelength
+        right_bound = np.max(line_wavelengths) + dwavelength
         for data in self._data.science:
             wavelengths = data.doppler_shifted_wavelength_centers[order]
-            left_bound = np.min(line_wavelengths) - dwavelength
             left = np.abs(wavelengths - left_bound).argmin()
             if left < 0:
                 left = 0
-            right_bound = np.max(line_wavelengths) + dwavelength
             right = np.abs(wavelengths - right_bound).argmin() + 1
             if right > wavelengths.shape[0]:
                 right = wavelengths.shape[0]
@@ -565,17 +584,20 @@ class _LineData:
         del primary_hdu.header['EXPTIME']
         primary_hdu.header.set('LINE', f'{line_name}',
                                'targeted emission line')
-        if trace is not None:
-            if trace_unc is not None:
-                trace, trace_unc = format_uncertainty(trace, trace_unc)
+        if (trace is not None) and (trace != 'error'):
+            if (trace_unc is not None) and (trace != 'error'):
+                fuzz = FuzzyQuantity(trace, trace_unc)
+                trace, trace_unc = fuzz.value, fuzz.uncertainty
                 primary_hdu.header.set('TRACEFIT', trace,
                                        'trace fit fractional pixel location')
                 primary_hdu.header.set(
                     'TRACEUNC', trace_unc,
                     'trace fit fractional pixel uncertainty')
-            else:
-                primary_hdu.header.set('TRACEFIT', trace,
-                                       'trace fit fractional pixel location')
+        else:
+            primary_hdu.header.set('TRACEFIT', trace,
+                                   'trace fit fractional pixel location')
+            primary_hdu.header.set('TRACEUNC', trace_unc,
+                                   'trace fit fractional pixel location')
         if linex is not None:
             for i, line in enumerate(linex):
                 primary_hdu.header.set(
@@ -624,15 +646,30 @@ class _LineData:
                 ('NPANG', self._round(north_pole_angle.value, 4),
                  f'north pole angle [{north_pole_angle.unit}]'),
                 after=True)
+        if (np.isnan(brightness) or np.isnan(brightness_unc)
+                or np.isnan(brightness_std)):
+            brightness = 'error'
+            brightness_unit = 'error'
+            brightness_unc = 'error'
+            brightness_unc_unit = 'error'
+            brightness_std = 'error'
+            brightnessstd_unit = 'error'
+        else:
+            brightness_unit = brightness.unit
+            brightness = brightness.value
+            brightness_unc_unit = brightness_unc.unit
+            brightness_unc = brightness_unc.value
+            brightnessstd_unit = brightness_std.unit
+            brightness_std = brightness_std.value
         primary_hdu.header.set(
-            'BGHTNESS', brightness.value,
-            f'retrieved brightness [{brightness.unit}]')
+            'BGHTNESS', brightness,
+            f'retrieved brightness [{brightness_unit}]')
         primary_hdu.header.set(
-            'BGHT_UNC', brightness_unc.value,
-            f'retrieved brightness uncertainty [{brightness_unc.unit}]')
+            'BGHT_UNC', brightness_unc,
+            f'retrieved brightness uncertainty [{brightness_unc_unit}]')
         primary_hdu.header.set(
-            'BGHT_STD', brightness_std.value,
-            f'retrieved brightness standard deviation [{brightness_std.unit}]')
+            'BGHT_STD', brightness_std,
+            f'retrieved brightness standard deviation [{brightnessstd_unit}]')
 
     # noinspection DuplicatedCode
     def save_individual_fits(
@@ -819,7 +856,8 @@ class _LineData:
             return savename
 
     # noinspection DuplicatedCode
-    def run_individual(self, line_wavelengths: u.Quantity, line_name: str):
+    def run_individual(self, line_wavelengths: u.Quantity, line_name: str,
+                       trace_offset: int or float = 0.0):
         """
         Process all individual observations for a set of lines (singlet or
         multiplet).
@@ -831,13 +869,14 @@ class _LineData:
         line_name : u.Quantity
             The name of the line (will become the directory where the results
             are saved).
+        trace_offset : int or float
+            Additional systematic vertical offset for individual traces.
 
         Returns
         -------
         None.
         """
         order = self._data.find_order_with_wavelength(line_wavelengths)
-
         select, select_edges = self._get_data_slice(order, line_wavelengths)
         spatial_scale = self._data.science[0].data_header['SPASCALE']
         spectral_scale = self._data.science[0].data_header['SPESCALE']
@@ -851,21 +890,45 @@ class _LineData:
         wavelength_edge_selection = (
             self._data.science[0].doppler_shifted_wavelength_edges[order]
             [select_edges[1]])
-        for data, trace in zip(self._data.science, self._data.trace):
+        n_traces = len(self._data.trace)
+        n_science = len(self._data.science)
+        if n_traces != n_science:
+            print(f"      Warning! The number of trace images ({n_traces}) "
+                  f"doesn't match the number of science images ({n_science}). "
+                  f"The pipeline will only use the first trace image.")
+            use_trace = self._data.trace[0]
+            traces = []
+            for i in range(n_science):
+                traces.append(use_trace)
+        else:
+            traces = self._data.trace
+        for data, trace in zip(self._data.science, traces):
             geometry = Geometry(target=data.data_header['OBJECT'],
                                 observation_time=data.data_header['DATE-OBS'])
             data_selection = data.data[order][select]
             unc_selection = data.uncertainty[order][select]
             trace_data_selection = trace.data[order][select]
             trace_unc_selection = trace.uncertainty[order][select]
-            trace_fit, trace_fit_unc = _fit_trace(
-                trace_data_selection, trace_unc_selection)
+            try:
+                trace_fit, trace_fit_unc = _fit_trace(
+                    trace_data_selection, trace_unc_selection)
+                trace_fit = trace_fit + trace_offset
+            except TraceFitError:
+                trace_fit = 'error'
+                trace_fit_unc = 'error'
             horizontal_positions = self._get_line_indices(
                 wavelengths=wavelength_selection,
                 line_wavelengths=line_wavelengths)
+            if isinstance(self._horizontal_offset, dict):
+                if line_name in self._horizontal_offset.keys():
+                    horizontal_offset = self._horizontal_offset[line_name]
+                else:
+                    horizontal_offset = 0.0
+            else:
+                horizontal_offset = self._horizontal_offset
             mask = _Mask(data=data_selection, trace_center=trace_fit,
                          horizontal_positions=horizontal_positions,
-                         horizontal_offset=self._horizontal_offset,
+                         horizontal_offset=horizontal_offset,
                          spatial_scale=spatial_scale,
                          spectral_scale=spectral_scale,
                          aperture_radius=self._aperture_radius,
@@ -885,14 +948,16 @@ class _LineData:
                 data_selection.shape[0], axis=0)
             calibrated_data = calibrated_data * dwavelength
             calibrated_unc = calibrated_unc * dwavelength
-            brightness = np.nansum(
-                calibrated_data.value * mask.background_mask
-            ) * calibrated_data.unit
-            qty = (calibrated_unc * mask.background_mask)**2
-            brightness_unc = np.sqrt(np.nansum(qty))
-            n = np.count_nonzero(np.isnan(mask.target_mask))
-            brightness_std = (np.nanstd(calibrated_data * mask.target_mask)
-                              * np.sqrt(n))
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', category=RuntimeWarning)
+                brightness = np.nansum(
+                    calibrated_data.value * mask.background_mask
+                ) * calibrated_data.unit
+                qty = (calibrated_unc * mask.background_mask)**2
+                brightness_unc = np.sqrt(np.nansum(qty))
+                n = np.count_nonzero(np.isnan(mask.target_mask))
+                brightness_std = (np.nanstd(calibrated_data * mask.target_mask)
+                                  * np.sqrt(n))
 
             # calibrate data to "per pixel" assuming emission from disk the
             # size of the target satellite
@@ -993,9 +1058,16 @@ class _LineData:
         horizontal_positions = self._get_line_indices(
             wavelengths=wavelength_selection,
             line_wavelengths=line_wavelengths)
+        if isinstance(self._horizontal_offset, dict):
+            if line_name in self._horizontal_offset.keys():
+                horizontal_offset = self._horizontal_offset[line_name]
+            else:
+                horizontal_offset = 0.0
+        else:
+            horizontal_offset = self._horizontal_offset
         mask = _Mask(data=data_selection, trace_center=trace_fit,
                      horizontal_positions=horizontal_positions,
-                     horizontal_offset=self._horizontal_offset,
+                     horizontal_offset=horizontal_offset,
                      spatial_scale=spatial_scale,
                      spectral_scale=spectral_scale,
                      aperture_radius=(self._aperture_radius *
@@ -1016,13 +1088,15 @@ class _LineData:
             data_selection.shape[0], axis=0)
         calibrated_data = calibrated_data * dwavelength
         calibrated_unc = calibrated_unc * dwavelength
-        brightness = np.nansum(calibrated_data.value * mask.background_mask
-                               ) * calibrated_data.unit
-        qty = (calibrated_unc * mask.background_mask) ** 2
-        brightness_unc = np.sqrt(np.nansum(qty))
-        n = np.count_nonzero(~np.isnan(mask.target_mask))
-        brightness_std = (np.nanstd(calibrated_data * mask.target_mask)
-                          * np.sqrt(n))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            brightness = np.nansum(calibrated_data.value * mask.background_mask
+                                   ) * calibrated_data.unit
+            qty = (calibrated_unc * mask.background_mask) ** 2
+            brightness_unc = np.sqrt(np.nansum(qty))
+            n = np.count_nonzero(~np.isnan(mask.target_mask))
+            brightness_std = (np.nanstd(calibrated_data * mask.target_mask)
+                              * np.sqrt(n))
 
         # calibrate data to "per pixel" assuming emission from disk the
         # size of the target satellite
@@ -1058,8 +1132,10 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
                    trim_bottom: int, trim_top: int,
                    aperture_radius: u.Quantity,
                    average_aperture_scale: float = 1.0,
-                   horizontal_offset: int = 0, exclude: [int] = None,
-                   average_trace_offset: int or float = 0.0):
+                   horizontal_offset: int or float or dict = 0,
+                   exclude: [int] = None,
+                   average_trace_offset: int or float = 0.0,
+                   individual_trace_offset: int or float = 0.0):
     """
     This function runs the aurora data calibration pipeline for all wavelengths
     (default O and H or extended Io set).
@@ -1078,13 +1154,19 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
         Aperture to use when retrieving brightness in [arcsec].
     average_aperture_scale : float
         If you want to scale the aperture radius for the averages.
-    horizontal_offset : int or float
-        Additional pixel offset for horizontal centering if wavelength solution
-        is off.
+    horizontal_offset : int or float or dict
+        Any additional offset if the wavelength solution is off. If an int
+        or float, it will apply to all wavelengths. If it's a dict, then it
+        will only apply to the transition indicated in the key. For
+        example, it could be `{'[O I] 557.7 nm': -3}`, which would offset
+        the wavelength solution for the retrieval of the 557.7 nm [O I]
+        brightness by -3 pixels.
     exclude : [int]
         Indices of observations to exclude from averaging.
     average_trace_offset : int or float
         Additional vertical offset for "trace" in the average image.
+    individual_trace_offset : int or float
+        Additional systematic vertical offset for individual traces.
     """
 
     aurora_lines = AuroraLines(extended=extended)
@@ -1101,7 +1183,8 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
         print(f'   Calibrating {line_name} data...')
         try:
             line_data.run_individual(line_wavelengths=line_wavelengths,
-                                     line_name=line_name)
+                                     line_name=line_name,
+                                     trace_offset=individual_trace_offset)
             line_data.run_average(line_wavelengths=line_wavelengths,
                                   line_name=line_name, exclude=exclude,
                                   trace_offset=average_trace_offset)

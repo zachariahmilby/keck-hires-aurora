@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 
 import astropy.units as u
@@ -14,7 +15,7 @@ from datetime import datetime
 from matplotlib.patches import Circle
 
 from hiresaurora.ephemeris import _get_ephemeris
-from hiresaurora.general import rcparams, AuroraLines, format_uncertainty
+from hiresaurora.general import rcparams, AuroraLines, FuzzyQuantity
 
 plt.style.use(rcparams)
 
@@ -78,6 +79,7 @@ def make_quicklook(file_path: Path):
         width = dunit * n_spe / aspect_ratio
         height += 4 * dunit
         width += 2 * dunit
+        print(width, height)
         fig, axes = plt.subplots(4, figsize=(width, height),
                                  layout='constrained', clear=True)
         [axis.xaxis.set_major_locator(ticker.NullLocator()) for axis in axes]
@@ -91,8 +93,10 @@ def make_quicklook(file_path: Path):
         else:
             end = ''
 
-        norm = colors.Normalize(vmin=np.nanpercentile(raw_data, 1),
-                                vmax=np.nanpercentile(raw_data, 99.9))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            norm = colors.Normalize(vmin=np.nanpercentile(raw_data, 1),
+                                    vmax=np.nanpercentile(raw_data, 99.9))
         spascale = hdul['PRIMARY'].header['SPASCALE']
         spescale = hdul['PRIMARY'].header['SPESCALE']
         x, y = np.meshgrid(np.arange(raw_data.shape[1]) * spescale,
@@ -106,8 +110,10 @@ def make_quicklook(file_path: Path):
                         axis=axes[1])
         _place_label(label='Background Fit', axis=axes[1])
 
-        norm = colors.Normalize(vmin=np.nanpercentile(snr, 1),
-                                vmax=np.nanpercentile(snr, 99.9))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            norm = colors.Normalize(vmin=np.nanpercentile(snr, 1),
+                                    vmax=np.nanpercentile(snr, 99.9))
         img2 = axes[2].pcolormesh(x, y, snr, norm=norm, cmap=cmap)
         _place_colorbar(img=img2, unit='Ratio',
                         axis=axes[2])
@@ -119,8 +125,11 @@ def make_quicklook(file_path: Path):
                          np.array(line[0]) * spascale,
                          color='red')
 
-        norm = colors.Normalize(vmin=np.nanpercentile(calibrated_data, 1),
-                                vmax=np.nanpercentile(calibrated_data, 99.9))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            norm = colors.Normalize(
+                vmin=np.nanpercentile(calibrated_data, 1),
+                vmax=np.nanpercentile(calibrated_data, 99.9))
         img3 = axes[3].pcolormesh(x, y, calibrated_data, norm=norm, cmap=cmap)
         _place_colorbar(img=img3, unit=hdul['CALIBRATED'].header['BUNIT'],
                         axis=axes[3])
@@ -292,7 +301,8 @@ class PostageStamps:
         unit = hdul['CALIBRATED'].header['BUNIT']
         unc = np.min([hdul['PRIMARY'].header['BGHT_UNC'],
                       hdul['PRIMARY'].header['BGHT_STD']])
-        val, unc = format_uncertainty(hdul['PRIMARY'].header['BGHTNESS'], unc)
+        fuzz = FuzzyQuantity(hdul['PRIMARY'].header['BGHTNESS'], unc)
+        val, unc = fuzz.value, fuzz.uncertainty
         axis.annotate(f'{val} ± {unc} {unit}'.replace("-", "–"), xy=(0, 1),
                       xytext=(4, -4), xycoords='axes fraction',
                       textcoords='offset points', ha='left', va='top',

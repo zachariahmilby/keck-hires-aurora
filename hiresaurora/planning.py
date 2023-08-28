@@ -328,6 +328,8 @@ class EclipsePrediction:
                 target=self._target, starting_datetime=starting_time,
                 ending_datetime=ending_time, step='1m')
             indices = _get_eclipse_indices(ephemeris)
+            if len(indices) < 2:
+                continue
             refined_ephemeris = _get_ephemerides(
                 target=self._target,
                 starting_datetime=ephemeris['datetime_str'][indices[0]],

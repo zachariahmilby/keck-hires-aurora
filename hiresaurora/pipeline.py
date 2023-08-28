@@ -50,8 +50,10 @@ class AuroraPipeline:
             excluded=self._exclude, extended=self._extended)
 
     def run(self, trim_bottom: int, trim_top: int, aperture_radius: u.Quantity,
-            average_aperture_scale: float, horizontal_offset: int or float,
-            average_trace_offset: int or float = 0.0) -> None:
+            average_aperture_scale: float,
+            horizontal_offset: int or float or dict,
+            average_trace_offset: int or float = 0.0,
+            systematic_trace_offset: int or float = 0.0) -> None:
         """
         Run the aurora pipeline.
 
@@ -69,10 +71,17 @@ class AuroraPipeline:
             The extraction aperture radius in arcsec.
         average_aperture_scale : float
             Factor to scale the aperture radius by for the average images.
-        horizontal_offset : int or float
-            Any additional offset if the wavelength solution is off.
+        horizontal_offset : int or float or dict
+            Any additional offset if the wavelength solution is off. If an int
+            or float, it will apply to all wavelengths. If it's a dict, then it
+            will only apply to the transition indicated in the key. For
+            example, it could be `{'[O I] 557.7 nm': -3}`, which would offset
+            the wavelength solution for the retrieval of the 557.7 nm [O I]
+            brightness by -3 pixels.
         average_trace_offset : int or float
-            Additional vertical offset for "trace" in the average image.
+            Additional vertical offset for the "trace" in the average image.
+        systematic_trace_offset : int or float
+            Additional systematic vertical offset for individual traces.
 
         Returns
         -------
@@ -80,14 +89,15 @@ class AuroraPipeline:
         """
         t0 = datetime.now()
         dataset = self._reduced_data_directory.parent.name
-        print(f'Running aurora pipeline for {dataset}...')
+        print(f'Running aurora calibration pipeline for {dataset}...')
         calibrate_data(reduced_data_directory=self._reduced_data_directory,
                        extended=self._extended, trim_bottom=trim_bottom,
                        trim_top=trim_top, aperture_radius=aperture_radius,
                        average_aperture_scale=average_aperture_scale,
                        horizontal_offset=horizontal_offset,
                        exclude=self._exclude,
-                       average_trace_offset=average_trace_offset)
+                       average_trace_offset=average_trace_offset,
+                       individual_trace_offset=systematic_trace_offset)
         self.summarize()
         elapsed_time = datetime.now() - t0
         print(f'Processing complete, time elapsed: {elapsed_time}.')

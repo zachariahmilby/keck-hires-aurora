@@ -62,7 +62,7 @@ class _Background:
             profile = np.nanmean(data[:, ind], axis=1)
             kernel = Gaussian1DKernel(stddev=width)
             smoothed_profile = convolve(profile, kernel, boundary='extend')
-        return smoothed_profile / np.nanmax(smoothed_profile)
+            return smoothed_profile / np.nanmax(smoothed_profile)
 
     @staticmethod
     def _fitting_model(profile, coefficient):
@@ -71,7 +71,7 @@ class _Background:
         """
         return coefficient * profile
 
-    def _fit_profile_background(self, window=3):
+    def _fit_profile_background(self, window=2):
         """
         Fit either a characteristic column profile.
 
@@ -89,34 +89,48 @@ class _Background:
                       independent_vars=['profile'],
                       nan_policy='omit')
         profile = self._get_column_profile(masked_data)
+        if np.where(np.isnan(profile))[0].size == profile.size:
+            profile = np.ones_like(profile)
+        elif np.where(np.isnan(profile))[0].size > 0:
+            good = ~np.isnan(profile)
+            x = np.arange(profile.size)
+            profile = np.interp(x, x[good], profile[good])
         dwindow = int((window - 1) / 2)
         for i in range(self._nspe):
-            s_ = np.s_[:, i]
-            if (i > dwindow) & (i < self._nspe-dwindow-1):
-                ss_ = np.s_[:, i-dwindow:i+dwindow+1]
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore', category=RuntimeWarning)
-                    data = np.nanmean(masked_data[ss_], axis=1)
-                    weights = window ** 2 / np.nansum(
-                        uncertainty[ss_] ** 2, axis=1)
-            else:
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore', category=RuntimeWarning)
-                    data = masked_data[s_]
-                    weights = 1 / uncertainty[s_] ** 2
             try:
-                good = np.where(~np.isnan(data))[0]
-                if len(good) > 0:
-                    params = Parameters()
-                    params.add('coefficient', value=np.nanmax(data), min=0)
-                    fit = model.fit(data[good], params=params,
-                                    weights=weights[good],
-                                    profile=profile[good])
-                    background[s_] = fit.eval(profile=profile)
-                    background_uncertainty[s_] = fit.eval_uncertainty(
-                        profile=profile)
-            except ValueError:
-                raise BackgroundFitError()
+                s_ = np.s_[:, i]
+                if (i > dwindow) & (i < self._nspe-dwindow-1):
+                    ss_ = np.s_[:, i-dwindow:i+dwindow+1]
+                    with warnings.catch_warnings():
+                        warnings.simplefilter(
+                            'ignore', category=RuntimeWarning)
+                        data = np.nanmean(masked_data[ss_], axis=1)
+                        weights = window ** 2 / np.nansum(
+                            uncertainty[ss_] ** 2, axis=1)
+                else:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter(
+                            'ignore', category=RuntimeWarning)
+                        data = masked_data[s_]
+                        weights = 1 / uncertainty[s_] ** 2
+                try:
+                    good = np.where(~np.isnan(data))[0]
+                    if len(good) > 0:
+                        params = Parameters()
+                        params.add('coefficient', value=np.nanmax(data), min=0)
+                        fit = model.fit(data[good], params=params,
+                                        weights=weights[good],
+                                        profile=profile[good])
+                        with warnings.catch_warnings():
+                            warnings.simplefilter(
+                                'ignore', category=RuntimeWarning)
+                            background[s_] = fit.eval(profile=profile)
+                            background_uncertainty[s_] = fit.eval_uncertainty(
+                                profile=profile)
+                except (ValueError, TypeError):
+                    raise BackgroundFitError()
+            except BackgroundFitError:
+                continue
         self._background += background
         self._background_unc = np.sqrt(self._background_unc**2
                                        + background_uncertainty**2)

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.table as mpltable
 from astropy.time import Time
 
-from hiresaurora.general import format_uncertainty, AuroraLines
+from hiresaurora.general import AuroraLines, FuzzyQuantity
 
 
 class TabulatedResults:
@@ -15,6 +15,11 @@ class TabulatedResults:
     Class to collect and tabulate results from data calibration brightness
     retrievals.
     """
+
+    _superscripts = {'⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
+                     '⁵': '⁵5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
+                     '⁺': '+', '⁻': '-'}
+
     def __init__(self, calibrated_data_path: str or Path, excluded: [int],
                  extended: bool):
         """
@@ -55,15 +60,30 @@ class TabulatedResults:
                     subresult['Excluded from Averaging'].to_numpy(dtype=bool)
             for j, column in enumerate(columns):
                 brightness = subresult[f'{column} [R]'].to_numpy()[0]
-                uncertainty = np.min(
-                    [subresult[f'{column} Unc. [R]'].to_numpy()[0],
-                     subresult[f'{column} Std. [R]'].to_numpy()[0]])
-                val, unc = format_uncertainty(quantity=brightness,
-                                              uncertainty=uncertainty)
-                data[i, j] = f'{val} ± {unc}'
-                snr = val / unc
-                if snr >= 2.0:
-                    detected[i, j] = True
+                try:
+                    uncertainty = np.min(
+                        [subresult[f'{column} Unc. [R]'].to_numpy()[0],
+                         subresult[f'{column} Std. [R]'].to_numpy()[0]])
+                    fuzz = FuzzyQuantity(brightness, uncertainty)
+                    label = fuzz.printable
+                    label = label.replace(' R', '')
+                    label = label.replace('±', r'\pm')
+                    if '×' in label:
+                        power = f"×{label.split('×')[1]}"
+                        label = label.replace(
+                            power, fr'\times 10^{{{fuzz.magnitude}}}')
+                    label = label.replace('×', r'\times')
+                    label = f'${label}$'
+                    data[i, j] = label
+                    try:
+                        snr = fuzz.value / fuzz.uncertainty
+                    except ZeroDivisionError:
+                        snr = np.nan
+                    if snr >= 2.0:
+                        detected[i, j] = True
+                except:
+                    data[i, j] = 'error'
+                    detected[i, j] = False
         cell_colors = np.full(data.shape, fill_value='red', dtype=object)
         cell_colors[np.where(detected)] = 'green'
 
@@ -115,17 +135,36 @@ class TabulatedResults:
         for name in self._aurora_lines.names:
             try:
                 brightnesses = results[f'{name} [R]'].to_numpy()
-                avg_brightness = np.mean(brightnesses[good])
+                if 'error' in brightnesses.tolist():
+                    avg_brightness = 'error'
+                else:
+                    avg_brightness = np.mean(brightnesses[good])
                 brightnesses = np.insert(brightnesses, -1, avg_brightness)
-                new_data[f'{name} [R]'] = np.round(brightnesses, 4)
+                try:
+                    new_data[f'{name} [R]'] = np.round(brightnesses, 4)
+                except TypeError:
+                    new_data[f'{name} [R]'] = brightnesses
                 uncertainties = results[f'{name} Unc. [R]'].to_numpy()
-                avg_uncertainty = np.sqrt(np.sum(uncertainties[good]**2)) / n
+                if 'error' in uncertainties.tolist():
+                    avg_uncertainty = 'error'
+                else:
+                    avg_uncertainty = \
+                        np.sqrt(np.sum(uncertainties[good]**2)) / n
                 uncertainties = np.insert(uncertainties, -1, avg_uncertainty)
-                new_data[f'{name} Unc. [R]'] = np.round(uncertainties, 4)
+                try:
+                    new_data[f'{name} Unc. [R]'] = np.round(uncertainties, 4)
+                except TypeError:
+                    new_data[f'{name} Unc. [R]'] = uncertainties
                 stddevs = results[f'{name} Std. [R]'].to_numpy()
-                avg_stddev = np.sqrt(np.sum(stddevs[good] ** 2)) / n
+                if 'error' in stddevs.tolist():
+                    avg_stddev = 'error'
+                else:
+                    avg_stddev = np.sqrt(np.sum(stddevs[good] ** 2)) / n
                 stddevs = np.insert(stddevs, -1, avg_stddev)
-                new_data[f'{name} Std. [R]'] = np.round(stddevs, 4)
+                try:
+                    new_data[f'{name} Std. [R]'] = np.round(stddevs, 4)
+                except TypeError:
+                    new_data[f'{name} Std. [R]'] = stddevs
             except KeyError:
                 continue
         new_data['Excluded from Averaging'] = np.insert(
