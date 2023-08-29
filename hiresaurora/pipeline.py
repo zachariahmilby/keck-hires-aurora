@@ -10,7 +10,8 @@ from hiresaurora.tabulation import tabulate_results
 class AuroraPipeline:
 
     def __init__(self, reduced_data_directory: str or Path,
-                 extended: bool = False, exclude_from_averaging: [int] = None):
+                 extended: bool = False, exclude_from_averaging: [int] = None,
+                 skip: [str] = None):
         """
         Parameters
         ----------
@@ -20,10 +21,14 @@ class AuroraPipeline:
             Whether or not to use the extended Io lines.
         exclude_from_averaging : [int]
             Indices of observations to exclude from averaging.
+        skip : [str]
+            Lines to skip when averaging. Example: `skip=['[O I] 557.7 nm']`.
+            Default is None.
         """
         self._reduced_data_directory = Path(reduced_data_directory)
         self._extended = extended
         self._exclude = exclude_from_averaging
+        self._skip = skip
         self._calibrated_data_directory = \
             self._parse_calibrated_data_directory()
 
@@ -97,7 +102,8 @@ class AuroraPipeline:
                        horizontal_offset=horizontal_offset,
                        exclude=self._exclude,
                        average_trace_offset=average_trace_offset,
-                       individual_trace_offset=systematic_trace_offset)
+                       individual_trace_offset=systematic_trace_offset,
+                       skip=self._skip)
         self.summarize()
         elapsed_time = datetime.now() - t0
         print(f'Processing complete, time elapsed: {elapsed_time}.')

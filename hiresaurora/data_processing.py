@@ -1135,7 +1135,8 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
                    horizontal_offset: int or float or dict = 0,
                    exclude: [int] = None,
                    average_trace_offset: int or float = 0.0,
-                   individual_trace_offset: int or float = 0.0):
+                   individual_trace_offset: int or float = 0.0,
+                   skip: [str] = None):
     """
     This function runs the aurora data calibration pipeline for all wavelengths
     (default O and H or extended Io set).
@@ -1167,8 +1168,12 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
         Additional vertical offset for "trace" in the average image.
     individual_trace_offset : int or float
         Additional systematic vertical offset for individual traces.
+    skip : [str]
+        Lines to skip when averaging. Example: `skip=['[O I] 557.7 nm']`.
+        Default is None.
     """
-
+    if skip is None:
+        skip = []
     aurora_lines = AuroraLines(extended=extended)
     line_data = _LineData(reduced_data_directory=reduced_data_directory,
                           horizontal_offset=horizontal_offset,
@@ -1180,6 +1185,9 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
     lines = aurora_lines.wavelengths
     line_names = aurora_lines.names
     for line_wavelengths, line_name in zip(lines, line_names):
+        if line_name in skip:
+            print(f'   Skipping {line_name}...')
+            continue
         print(f'   Calibrating {line_name} data...')
         try:
             line_data.run_individual(line_wavelengths=line_wavelengths,
@@ -1188,9 +1196,6 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
             line_data.run_average(line_wavelengths=line_wavelengths,
                                   line_name=line_name, exclude=exclude,
                                   trace_offset=average_trace_offset)
-        # except ValueError:
-        #     print(f'   Failed to calibrate {line_name} data...')
-        #     continue
         except WavelengthNotFoundError:
             print(f'      {line_name} not captured by HIRES setup! '
                   f'Skipping...')
