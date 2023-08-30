@@ -9,6 +9,9 @@ from astropy.time import Time
 
 from hiresaurora.general import AuroraLines, FuzzyQuantity
 
+# noinspection PyProtectedMember
+weird_error = np.core._exceptions._UFuncNoLoopError
+
 
 class TabulatedResults:
     """
@@ -43,7 +46,8 @@ class TabulatedResults:
         """
         columns = np.unique(
             [f"{s.split('nm')[0]}nm" for s in results.columns
-             if s not in ['Observation Time', 'Excluded from Averaging']])
+             if s not in ['Observation Time', 'Excluded from Averaging',
+                          'Distance from Plasma Sheet Equator [R_J]']])
         columnlabels = [f'{c} [R]' for c in columns]
         rows = results['Observation Time'].to_numpy(dtype=str)
         rowlabels = [Time(t, format='isot').to_datetime().strftime('%H:%M:%S')
@@ -81,7 +85,7 @@ class TabulatedResults:
                         snr = np.nan
                     if snr >= 2.0:
                         detected[i, j] = True
-                except:
+                except weird_error:
                     data[i, j] = 'error'
                     detected[i, j] = False
         cell_colors = np.full(data.shape, fill_value='red', dtype=object)
@@ -129,6 +133,10 @@ class TabulatedResults:
         rows = results['Observation Time'].to_numpy()
         rows = np.insert(rows, -1, 'Average of Above')
         new_data['Observation Time'] = rows
+        key = 'Distance from Plasma Sheet Equator [R_J]'
+        distances = results[key].to_numpy()
+        distances = np.insert(distances, -1, distances[-1])
+        new_data[key] = distances
         good = np.where(
             results['Excluded from Averaging'].to_numpy()[:-1] == 0)[0]
         n = good.size
@@ -187,6 +195,7 @@ class TabulatedResults:
             brightnesses = []
             uncertainties = []
             stddevs = []
+            distances = []
             if excluded is None:
                 excluded = np.zeros(len(files)).astype(bool)
             for i, file in enumerate(files):
@@ -200,15 +209,24 @@ class TabulatedResults:
                     brightness = primary_header['BGHTNESS']
                     uncertainty = primary_header['BGHT_UNC']
                     stddev = primary_header['BGHT_STD']
+                    try:
+                        distance = primary_header['PS_DIST']
+                    except KeyError:
+                        distance = np.nan
                     brightnesses.append(brightness)
                     uncertainties.append(uncertainty)
                     stddevs.append(stddev)
+                    distances.append(distance)
                 if self._excluded is not None:
                     if i in self._excluded:
                         excluded[i] = True
                     if file.name == 'average.fits.gz':
                         excluded[i] = True
+            distances = np.array(distances)
+            distances[np.where(np.isnan(distances))] = np.nanmean(distances)
+            distances = np.round(distances, 4)
             results['Observation Time'] = times
+            results['Distance from Plasma Sheet Equator [R_J]'] = distances
             results[f'{name} [R]'] = brightnesses
             results[f'{name} Unc. [R]'] = uncertainties
             results[f'{name} Std. [R]'] = stddevs
