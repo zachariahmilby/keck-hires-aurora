@@ -4,6 +4,7 @@ from pathlib import Path
 import astropy.units as u
 
 from hiresaurora.data_processing import calibrate_data
+from hiresaurora.general import _log, _write_log
 from hiresaurora.tabulation import tabulate_results
 
 
@@ -92,21 +93,28 @@ class AuroraPipeline:
         -------
         None.
         """
+        log = []
         t0 = datetime.now()
         dataset = self._reduced_data_directory.parent.name
-        print(f'Running aurora calibration pipeline for {dataset}...')
-        calibrate_data(reduced_data_directory=self._reduced_data_directory,
-                       extended=self._extended, trim_bottom=trim_bottom,
-                       trim_top=trim_top, aperture_radius=aperture_radius,
-                       average_aperture_scale=average_aperture_scale,
-                       horizontal_offset=horizontal_offset,
-                       exclude=self._exclude,
-                       average_trace_offset=average_trace_offset,
-                       individual_trace_offset=systematic_trace_offset,
-                       skip=self._skip)
+        _log(log, f"\n{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')}")
+        _log(log, f'Running aurora calibration pipeline for {dataset}...')
+        calibrate_data(
+            log=log,
+            reduced_data_directory=self._reduced_data_directory,
+            extended=self._extended, trim_bottom=trim_bottom,
+            trim_top=trim_top, aperture_radius=aperture_radius,
+            average_aperture_scale=average_aperture_scale,
+            horizontal_offset=horizontal_offset,
+            exclude=self._exclude,
+            average_trace_offset=average_trace_offset,
+            individual_trace_offset=systematic_trace_offset,
+            skip=self._skip)
         self.summarize()
         elapsed_time = datetime.now() - t0
-        print(f'Processing complete, time elapsed: {elapsed_time}.')
+        _log(log, f'Calibration complete, time elapsed: {elapsed_time}.')
+        _write_log(
+            Path(self._reduced_data_directory.parent, 'calibrated', 'log.txt'),
+            log)
 
     @property
     def reduced_data_directory(self) -> Path:

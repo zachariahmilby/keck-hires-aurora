@@ -12,7 +12,7 @@ from hiresaurora.background_subtraction import _Background
 from hiresaurora.calibration import _FluxCalibration
 from hiresaurora.ephemeris import _get_ephemeris
 from hiresaurora.general import _doppler_shift_wavelengths, AuroraLines, \
-    FuzzyQuantity
+    FuzzyQuantity, _log
 from hiresaurora.graphics import make_quicklook
 from hiresaurora.observing_geometry import Geometry
 
@@ -391,13 +391,17 @@ class _LineData:
     """
     Process individual data for a given emisison line or multiplet.
     """
-    def __init__(self, reduced_data_directory: str or Path,
+    def __init__(self, log: list,
+                 reduced_data_directory: str or Path,
                  aperture_radius: u.Quantity, average_aperture_scale: float,
                  horizontal_offset: int or float or dict = 0.0,
                  trim_top: int = 2, trim_bottom: int = 2):
         """
         Parameters
         ----------
+        log : list
+            List containing log entries to be written to file at the end of the
+            calibration pipeline.
         reduced_data_directory : str or Path
             File path to the reduced data directory from the HIRES data
             reduction pipeline.
@@ -421,6 +425,7 @@ class _LineData:
             rectified data (the background fitting significantly improves if
             the sawtooth slit edges are excluded). The default is 2.
         """
+        self._log = log
         self._reduced_data_directory = Path(reduced_data_directory)
         self._aperture_radius = aperture_radius.to(u.arcsec)
         self._average_aperture_scale = average_aperture_scale
@@ -893,9 +898,10 @@ class _LineData:
         n_traces = len(self._data.trace)
         n_science = len(self._data.science)
         if n_traces != n_science:
-            print(f"      Warning! The number of trace images ({n_traces}) "
-                  f"doesn't match the number of science images ({n_science}). "
-                  f"The pipeline will only use the first trace image.")
+            _log(self._log,
+                 f"      Warning! The number of trace images ({n_traces}) "
+                 f"doesn't match the number of science images ({n_science})." 
+                 f"The pipeline will only use the first trace image.")
             use_trace = self._data.trace[0]
             traces = []
             for i in range(n_science):
@@ -1128,7 +1134,9 @@ class _LineData:
         make_quicklook(file_path=file_path)
 
 
-def calibrate_data(reduced_data_directory: str or Path, extended: bool,
+def calibrate_data(log: list,
+                   reduced_data_directory: str or Path,
+                   extended: bool,
                    trim_bottom: int, trim_top: int,
                    aperture_radius: u.Quantity,
                    average_aperture_scale: float = 1.0,
@@ -1143,6 +1151,8 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
 
     Parameters
     ----------
+    log : list
+        List containing logged items.
     reduced_data_directory : str or Path
         Absolute path to reduced data from the HIRES pipeline.
     extended : bool
@@ -1175,7 +1185,8 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
     if skip is None:
         skip = []
     aurora_lines = AuroraLines(extended=extended)
-    line_data = _LineData(reduced_data_directory=reduced_data_directory,
+    line_data = _LineData(log=log,
+                          reduced_data_directory=reduced_data_directory,
                           horizontal_offset=horizontal_offset,
                           trim_top=trim_top,
                           trim_bottom=trim_bottom,
@@ -1186,19 +1197,20 @@ def calibrate_data(reduced_data_directory: str or Path, extended: bool,
     line_names = aurora_lines.names
     for line_wavelengths, line_name in zip(lines, line_names):
         if line_name in skip:
-            print(f'   Skipping {line_name}...')
+            _log(log, f'   Skipping {line_name}...')
             continue
-        print(f'   Calibrating {line_name} data...')
+        _log(log, f'   Calibrating {line_name} data...')
         try:
             line_data.run_individual(line_wavelengths=line_wavelengths,
                                      line_name=line_name,
                                      trace_offset=individual_trace_offset)
             line_data.run_average(line_wavelengths=line_wavelengths,
-                                  line_name=line_name, exclude=exclude,
+                                  line_name=line_name,
+                                  exclude=exclude,
                                   trace_offset=average_trace_offset)
         except WavelengthNotFoundError:
-            print(f'      {line_name} not captured by HIRES setup! '
-                  f'Skipping...')
+            _log(log, f'      {line_name} not captured by HIRES setup! '
+                      f'Skipping...')
             continue
     if exclude is not None:
-        print(f'Files {exclude} excluded from averaging.')
+        _log(log, f'Files {exclude} excluded from averaging.')

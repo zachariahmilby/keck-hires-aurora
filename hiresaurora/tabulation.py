@@ -5,6 +5,7 @@ from astropy.io import fits
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.table as mpltable
+from matplotlib.backends.backend_pdf import PdfPages
 from astropy.time import Time
 
 from hiresaurora.general import AuroraLines, FuzzyQuantity
@@ -44,11 +45,11 @@ class TabulatedResults:
         """
         Save a color-coded summary table.
         """
-        columns = np.unique(
-            [f"{s.split('nm')[0]}nm" for s in results.columns
-             if s not in ['Observation Time', 'Excluded from Averaging',
-                          'Distance from Plasma Sheet Equator [R_J]']])
-        columnlabels = [f'{c} [R]' for c in columns]
+        columns = [s for s in results.columns
+                   if s not in ['Observation Time', 'Excluded from Averaging',
+                                'Distance from Plasma Sheet Equator [R_J]']]
+        columnlabels = np.array([s for s in columns[0::3]])
+        columns = np.array([s.replace(' [R]', '') for s in columns[0::3]])
         rows = results['Observation Time'].to_numpy(dtype=str)
         rowlabels = [Time(t, format='isot').to_datetime().strftime('%H:%M:%S')
                      for t in rows[:-2]]
@@ -91,40 +92,53 @@ class TabulatedResults:
         cell_colors = np.full(data.shape, fill_value='red', dtype=object)
         cell_colors[np.where(detected)] = 'green'
 
-        figsize = (columns.size * 1.25, rows.size * 0.25)
-        fig, axis = plt.subplots(figsize=figsize, layout='constrained')
-        axis.set_frame_on(False)
-        axis.set_xticks([])
-        axis.set_yticks([])
+        cols = 6
+        n_pages = np.ceil(columns.size / cols).astype(int)
 
-        # noinspection PyTypeChecker
-        table = mpltable.table(ax=axis, cellText=data,
-                               rowLabels=rowlabels, colLabels=columnlabels,
-                               loc='center')
-        cells = table.get_celld()
-        for i in range(rows.size):
-            cells[i+1, -1].set_edgecolor('none')
-            for j in range(columns.size):
-                cells[0, j].set_edgecolor('none')
-                cells[i+1, j].set_alpha(0.1)
-                if detected[i, j]:
-                    cells[i+1, j].get_text().set_color('green')
-                else:
-                    cells[i+1, j].get_text().set_color('red')
-                if excluded[i, j]:
-                    cells[i+1, j].get_text().set_alpha(0.5)
-                    cells[i+1, j].set_alpha(0.05)
-                    cells[i+1, -1].get_text().set_alpha(0.5)
-                    cells[i+1, -1].set_alpha(0.05)
-                cells[i+1, j].set_edgecolor('none')
-                cells[rows.size, j].set_edgecolor('none')
-                cells[rows.size, -1].set_edgecolor('none')
-                if detected[i, j]:
-                    cells[i+1, j].set_facecolor('green')
-                else:
-                    cells[i+1, j].set_facecolor('red')
-        savename = Path(self._calibrated_data_path, 'results.pdf')
-        plt.savefig(savename)
+        with PdfPages(Path(self._calibrated_data_path, 'results.pdf')) as pdf:
+            for n in range(n_pages):
+                figsize = (cols * 1.25, rows.size * 0.25)
+                fig, axis = plt.subplots(figsize=figsize, layout='constrained',
+                                         clear=True)
+                axis.set_frame_on(False)
+                axis.set_xticks([])
+                axis.set_yticks([])
+
+                # get data subset
+                s_ = np.s_[n*cols:(n+1)*cols]
+                col_labels = columnlabels[s_]
+                subdata = data[:, s_]
+                subdetected = detected[:, s_]
+
+                # noinspection PyTypeChecker
+                table = mpltable.table(ax=axis, cellText=subdata,
+                                       rowLabels=rowlabels,
+                                       colLabels=col_labels,
+                                       loc='center')
+                cells = table.get_celld()
+                for i in range(rows.size):
+                    cells[i+1, -1].set_edgecolor('none')
+                    for j in range(col_labels.size):
+                        cells[0, j].set_edgecolor('none')
+                        cells[i+1, j].set_alpha(0.1)
+                        if subdetected[i, j]:
+                            cells[i+1, j].get_text().set_color('green')
+                        else:
+                            cells[i+1, j].get_text().set_color('red')
+                        if excluded[i, j]:
+                            cells[i+1, j].get_text().set_alpha(0.5)
+                            cells[i+1, j].set_alpha(0.05)
+                            cells[i+1, -1].get_text().set_alpha(0.5)
+                            cells[i+1, -1].set_alpha(0.05)
+                        cells[i+1, j].set_edgecolor('none')
+                        cells[rows.size, j].set_edgecolor('none')
+                        cells[rows.size, -1].set_edgecolor('none')
+                        if subdetected[i, j]:
+                            cells[i+1, j].set_facecolor('green')
+                        else:
+                            cells[i+1, j].set_facecolor('red')
+                pdf.savefig()
+                plt.close(fig)
 
     # noinspection DuplicatedCode
     def _calculate_averages_of_individuals(
@@ -234,7 +248,6 @@ class TabulatedResults:
         results = self._calculate_averages_of_individuals(results=results)
         results.to_csv(savename, index=False, sep=',')
         self._excluded = excluded
-
         self._make_mpl_table(results=results)
 
 
@@ -257,7 +270,6 @@ def tabulate_results(calibrated_data_path: str or Path,
     -------
     None.
     """
-    print('Tabulating results...')
     tabulated_results = TabulatedResults(
         calibrated_data_path=calibrated_data_path, excluded=excluded,
         extended=extended)

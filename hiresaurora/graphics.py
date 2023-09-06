@@ -55,6 +55,7 @@ def _place_label(label: str, axis: plt.Axes):
                   color='black', bbox=bbox)
 
 
+# noinspection DuplicatedCode
 def make_quicklook(file_path: Path):
     """
     Make a calibrated data quicklook for a given data file.
