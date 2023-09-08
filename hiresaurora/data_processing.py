@@ -585,7 +585,7 @@ class _LineData:
         del primary_hdu.header['BUNIT']
         del primary_hdu.header['OBJECT']
         del primary_hdu.header['AIRMASS']
-        del primary_hdu.header['DATE-OBS']
+        # del primary_hdu.header['DATE-OBS']
         del primary_hdu.header['EXPTIME']
         primary_hdu.header.set('LINE', f'{line_name}',
                                'targeted emission line')
