@@ -69,14 +69,17 @@ class Geometry:
         return ((a * np.tanh(b * (r / const.R_jup).value - c) + d) * np.sin(
             lon - e)).to(u.degree)
 
-    @staticmethod
-    def _convert_to_height(r: u.Quantity, lat: u.Quantity) -> u.Quantity:
+    def _convert_to_height(self, r: u.Quantity, lon: u.Quantity) -> u.Quantity:
         """
         Calculate height above or below centrifugal equator in Jupiter radii
-        using right-triangle geometry.
+        using minimum distance.
         """
-        lat = lat.to(u.radian)
-        return r.to(rJ) * np.tan(-lat)
+        x = np.linspace(0, 2 * r.to(rJ).value, 10000) * rJ
+        lat = self._centrifugal_equator_latitude(r=x, lon=lon)
+        sign = -1 * np.sign(lat[(x - r).argmin()])
+        y = x * np.tan(-lat)
+        dist = np.sqrt((x - r.to(rJ)) ** 2 + y ** 2)
+        return dist.min().to(rJ) * sign
 
     @staticmethod
     def _convert_west_longitude_to_east(lon: u.Quantity) -> u.Quantity:
@@ -110,6 +113,11 @@ class Geometry:
         dt = self._convert_to_quantity(eph['lighttime'])
         return self._observation_time - dt
 
+    @staticmethod
+    def _convert_to_magnetic_latitude(
+            latitude: u.Quantity, longitude: u.Quantity) -> u.Quantity:
+        return 9.5 * u.degree * np.cos(longitude - 159 * u.degree) - latitude
+
     def _get_subjovian_coordinates(self) -> dict:
         """
         Need to account for the time in the Jovian system when the observations
@@ -120,15 +128,13 @@ class Geometry:
         subjovian_latitude = self._convert_to_quantity(eph['PDObsLat'])
         subjovian_longitude = self._convert_west_longitude_to_east(
             self._convert_to_quantity(eph['PDObsLon']))
+        magnetic_latitude = self._convert_to_magnetic_latitude(
+            latitude=subjovian_latitude, longitude=subjovian_longitude)
         distance_from_jupiter = self._convert_to_quantity(eph['delta'])
-        equator_latitude = self._centrifugal_equator_latitude(
-            r=distance_from_jupiter, lon=subjovian_longitude)
-        latitude = subjovian_latitude - equator_latitude
         height = self._convert_to_height(
-            r=distance_from_jupiter,
-            lat=equator_latitude + subjovian_latitude)
+            r=distance_from_jupiter, lon=subjovian_longitude)
         return {
-            'magnetic_latitude': latitude.to(u.degree),
+            'magnetic_latitude': magnetic_latitude.to(u.degree),
             'magnetic_longitude': subjovian_longitude,
             'distance': distance_from_jupiter.to(rJ),
             'height': height.to(rJ)
