@@ -12,7 +12,7 @@ class AuroraPipeline:
 
     def __init__(self, reduced_data_directory: str or Path,
                  extended: bool = False, exclude_from_averaging: [int] = None,
-                 skip: [str] = None):
+                 skip: [str] = None, smooth_background: bool = True):
         """
         Parameters
         ----------
@@ -25,11 +25,16 @@ class AuroraPipeline:
         skip : [str]
             Lines to skip when averaging. Example: `skip=['[O I] 557.7 nm']`.
             Default is None.
+        smooth_background : bool
+            Whether or not to apply a Gaussian kernel to smooth the fitted
+            background. Sometimes the subtraction can be much worse (especially
+            around atmospheric lines), so you could turn this off if it is.
         """
         self._reduced_data_directory = Path(reduced_data_directory)
         self._extended = extended
         self._exclude = exclude_from_averaging
         self._skip = skip
+        self._smoothed_background = smooth_background
         self._calibrated_data_directory = \
             self._parse_calibrated_data_directory()
 
@@ -108,7 +113,7 @@ class AuroraPipeline:
             exclude=self._exclude,
             average_trace_offset=average_trace_offset,
             individual_trace_offset=systematic_trace_offset,
-            skip=self._skip)
+            skip=self._skip, smooth_background=self._smoothed_background)
         self.summarize()
         elapsed_time = datetime.now() - t0
         _log(log, f'Calibration complete, time elapsed: {elapsed_time}.')

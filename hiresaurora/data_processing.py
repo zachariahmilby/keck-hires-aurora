@@ -395,7 +395,8 @@ class _LineData:
                  reduced_data_directory: str or Path,
                  aperture_radius: u.Quantity, average_aperture_scale: float,
                  horizontal_offset: int or float or dict = 0.0,
-                 trim_top: int = 2, trim_bottom: int = 2):
+                 trim_top: int = 2, trim_bottom: int = 2,
+                 smooth_background: bool = True):
         """
         Parameters
         ----------
@@ -424,6 +425,10 @@ class _LineData:
             Number of additional rows to trim off of the bottom of the
             rectified data (the background fitting significantly improves if
             the sawtooth slit edges are excluded). The default is 2.
+        smooth_background : bool
+            Whether or not to apply a Gaussian kernel to smooth the fitted
+            background. Sometimes the subtraction can be much worse (especially
+            around atmospheric lines), so you could turn this off if it is.
         """
         self._log = log
         self._reduced_data_directory = Path(reduced_data_directory)
@@ -432,6 +437,7 @@ class _LineData:
         self._horizontal_offset = horizontal_offset
         self._trim_top = trim_top
         self._trim_bottom = trim_bottom
+        self._smooth_background = smooth_background
         self._data = _RawData(self._reduced_data_directory)
         self._save_directory = self._parse_save_directory()
 
@@ -945,7 +951,8 @@ class _LineData:
                 mask=mask.target_mask,
                 radius=mask.aperture_radius.value,
                 spectral_scale=spectral_scale,
-                spatial_scale=spatial_scale)
+                spatial_scale=spatial_scale,
+                smoothed=self._smooth_background)
             calibrated_data, calibrated_unc = calibration.calibrate(
                 background.data, background.uncertainty,
                 target_size=mask.satellite_size)
@@ -1085,7 +1092,8 @@ class _LineData:
             mask=mask.target_mask,
             radius=mask.aperture_radius.value,
             spectral_scale=spectral_scale,
-            spatial_scale=spatial_scale)
+            spatial_scale=spatial_scale,
+            smoothed=self._smooth_background)
         calibrated_data, calibrated_unc = calibration.calibrate(
             background.data, background.uncertainty,
             target_size=mask.satellite_size)
@@ -1144,7 +1152,8 @@ def calibrate_data(log: list,
                    exclude: [int] = None,
                    average_trace_offset: int or float = 0.0,
                    individual_trace_offset: int or float = 0.0,
-                   skip: [str] = None):
+                   skip: [str] = None,
+                   smooth_background: bool = True):
     """
     This function runs the aurora data calibration pipeline for all wavelengths
     (default O and H or extended Io set).
@@ -1181,6 +1190,10 @@ def calibrate_data(log: list,
     skip : [str]
         Lines to skip when averaging. Example: `skip=['[O I] 557.7 nm']`.
         Default is None.
+    smooth_background : bool
+        Whether or not to apply a Gaussian kernel to smooth the fitted
+        background. Sometimes the subtraction can be much worse (especially
+        around atmospheric lines), so you could turn this off if it is.
     """
     if skip is None:
         skip = []
@@ -1191,7 +1204,8 @@ def calibrate_data(log: list,
                           trim_top=trim_top,
                           trim_bottom=trim_bottom,
                           aperture_radius=aperture_radius,
-                          average_aperture_scale=average_aperture_scale)
+                          average_aperture_scale=average_aperture_scale,
+                          smooth_background=smooth_background)
 
     lines = aurora_lines.wavelengths
     line_names = aurora_lines.names
