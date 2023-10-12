@@ -58,6 +58,16 @@ def _convert_to_california_time(utc_time_string: str) -> datetime.datetime:
     return datetime_object.astimezone(timezone)
 
 
+def _convert_to_hawaii_time(utc_time_string: str) -> datetime.datetime:
+    """
+    Convert a UTC datetime string to local time at Caltech.
+    """
+    datetime_object = _convert_string_to_datetime(utc_time_string)
+    timezone = pytz.timezone('Pacific/Honolulu')
+    datetime_object = pytz.utc.localize(datetime_object)
+    return datetime_object.astimezone(timezone)
+
+
 def _calculate_duration(starting_time: str, ending_time: str) -> str:
     """
     Determine duration between two datetime strings to minute precision.
@@ -106,24 +116,15 @@ def _keck_one_alt_az_axis(axis: plt.Axes) -> plt.Axes:
     return axis
 
 
-def _format_axis_date_labels(utc_axis: plt.Axes) -> plt.Axes:
-    """
-    Format axis date labels so that major ticks occur every hour and minor
-    ticks occur every 15 minutes. Also creates a new axis with local
-    California time as the upper horizontal axis.
-    """
-    utc_axis.xaxis.set_major_formatter(dates.DateFormatter('%H:%M'))
-    utc_axis.xaxis.set_major_locator(dates.HourLocator(interval=1))
-    utc_axis.xaxis.set_minor_locator(
+def _set_date_axis_format(axis, null=False, tz=None):
+    axis.xaxis.set_major_locator(
+        dates.HourLocator(byhour=np.arange(0, 24, 1), interval=2))
+    axis.xaxis.set_major_formatter(
+        dates.DateFormatter('%H:%M', tz=tz, usetex=False))
+    axis.xaxis.set_minor_locator(
         dates.MinuteLocator(byminute=np.arange(0, 60, 15), interval=1))
-    pacific_axis = utc_axis.twiny()
-    pacific_axis.set_xlim(utc_axis.get_xlim())
-    pacific_axis.xaxis.set_major_formatter(
-        dates.DateFormatter('%H:%M', tz=pytz.timezone('US/Pacific')))
-    pacific_axis.xaxis.set_major_locator(dates.HourLocator(interval=1))
-    pacific_axis.xaxis.set_minor_locator(
-        dates.MinuteLocator(byminute=np.arange(0, 60, 15), interval=1))
-    return pacific_axis
+    if null:
+        plt.setp(axis.get_xticklabels(), visible=False)
 
 
 class _AngularSeparation:
@@ -274,11 +275,17 @@ class EclipsePrediction:
         self._ending_datetime = ending_datetime
         self._minimum_deltav = self._convert_deltav(minimum_deltav)
         self._eclipses = self._find_eclipses()
+        self._print_string = self._get_print_string()
+        if self._print_string is None:
+            self._eclipses = []
         if print_results:
-            print(self._print_string())
+            if self._print_string is None:
+                print('Sorry, no usable eclipses found!')
+            else:
+                print(self._print_string)
 
     def __str__(self):
-        return self._print_string()
+        return self._print_string
 
     @staticmethod
     def _convert_deltav(deltav: int | float):
@@ -337,19 +344,16 @@ class EclipsePrediction:
             data.append(refined_ephemeris)
         return data
 
-    def _print_string(self) -> str:
+    def _get_print_string(self) -> str or None:
         """
         Format a terminal-printable summary table of the identified eclipses
         along with starting/ending times in both UTC and local California time,
         the duration of the eclipse, the range in airmass and the satellite's
         relative velocity.
         """
-        if len(self._eclipses) == 0:
-            return 'Sorry, no eclipses found!'
         df = pd.DataFrame(
-            columns=['Starting Time (Keck/UTC)', 'Ending Time (Keck/UTC)',
-                     'Starting Time (California)', 'Ending Time (California)',
-                     'Duration', 'Airmass Range', 'Relative Velocity'])
+            columns=['Start (UTC)', 'End (UTC)', 'Duration', 'Airmass',
+                     'Relative Velocity'])
         for eclipse in range(len(self._eclipses)):
             relative_velocity = np.mean(self._eclipses[eclipse]['delta_rate'])
             if np.abs(relative_velocity) < self._minimum_deltav.value:
@@ -358,26 +362,26 @@ class EclipsePrediction:
             airmass = self._eclipses[eclipse]['airmass']
             starting_time_utc = times[0]
             ending_time_utc = times[-1]
+            start_utc = _convert_ephemeris_date_to_string(starting_time_utc)
+            end_utc = _convert_ephemeris_date_to_string(ending_time_utc)
             data = {
-                'Starting Time (Keck/UTC)':
-                    _convert_ephemeris_date_to_string(starting_time_utc),
-                'Ending Time (Keck/UTC)':
-                    _convert_ephemeris_date_to_string(ending_time_utc),
-                'Starting Time (California)': _convert_datetime_to_string(
-                    _convert_to_california_time(starting_time_utc)),
-                'Ending Time (California)': _convert_datetime_to_string(
-                    _convert_to_california_time(ending_time_utc)),
+                'Start (UTC)': start_utc,
+                'End (UTC)': end_utc,
                 'Duration':
                     _calculate_duration(starting_time_utc, ending_time_utc),
-                'Airmass Range':
+                'Airmass':
                     f"{np.min(airmass):.3f} to {np.max(airmass):.3f}",
                 'Relative Velocity': f"{relative_velocity:.1f} km/s"
             }
             df = pd.concat([df, pd.DataFrame(data, index=[0])])
-        print(f'\n{len(df)} {self._target_name} eclipse(s) '
-              f'identified between {self._starting_datetime} and '
-              f'{self._ending_datetime}.\n')
-        return pd.DataFrame(df).to_string(index=False, justify='left')
+        if (len(self._eclipses) == 0) or (len(df) == 0):
+            return None
+        else:
+            print(f'\n{len(df)} usable {self._target_name} eclipse(s) '
+                  f'identified between {self._starting_datetime} and '
+                  f'{self._ending_datetime}.\n')
+            return pd.DataFrame(df).to_string(index=False, justify='left',
+                                              col_space=[19, 19, 10, 16, 17])
 
     @staticmethod
     def _plot_line_with_initial_position(
@@ -415,43 +419,66 @@ class EclipsePrediction:
             times = dates.datestr2num(times)
             polar_angle = 'unknown'
             observer = Observer.at_site('Keck')
-            sunset = observer.sun_set_time(
-                Time(_convert_string_to_datetime(starting_time)),
-                which='nearest')
-            sunset = _convert_datetime_to_string(sunset.datetime)
-            sunrise = observer.sun_rise_time(
-                Time(_convert_string_to_datetime(ending_time)),
-                which='nearest')
-            sunrise = _convert_datetime_to_string(sunrise.datetime)
 
             # make figure and place axes
             with plt.style.context(rcparams):
-                fig = plt.figure(figsize=(5, 4), constrained_layout=True)
-                gs = gridspec.GridSpec(nrows=2, ncols=2, width_ratios=[1, 1.5],
-                                       figure=fig)
-                info_axis = fig.add_subplot(gs[0, 0])
+                fig = plt.figure(figsize=(6, 4), constrained_layout=True)
+                gs0 = gridspec.GridSpec(1, 2, figure=fig,
+                                        width_ratios=[1, 1.5])
+                gs1 = gridspec.GridSpecFromSubplotSpec(
+                    2, 1, subplot_spec=gs0[0], height_ratios=[1, 1.5])
+                gs2 = gridspec.GridSpecFromSubplotSpec(
+                    2, 1, subplot_spec=gs0[1], height_ratios=[0.42, 1-0.42])
+                info_axis = fig.add_subplot(gs1[0])
                 info_axis.set_frame_on(False)
                 info_axis.set_xticks([])
                 info_axis.set_yticks([])
                 alt_az_polar_axis = _keck_one_alt_az_axis(
-                    fig.add_subplot(gs[1, 0], projection='polar'))
-                airmass_axis_utc = fig.add_subplot(gs[0, 1])
+                    fig.add_subplot(gs1[1], projection='polar'))
+                airmass_axis_utc = fig.add_subplot(gs2[0])
                 airmass_axis_utc.set_ylabel('Airmass', fontweight='bold')
-                primary_sep_axis_utc = fig.add_subplot(gs[1, 1])
+                primary_sep_axis_utc = fig.add_subplot(
+                    gs2[1], sharex=airmass_axis_utc)
                 primary_sep_axis_utc.set_ylabel('Angular Separation [arcsec]',
                                                 fontweight='bold')
+
+                # twilight regions
+                start = Time(_convert_string_to_datetime(starting_time))
+                sunset = observer.sun_set_time(start, which='nearest')
+                sunrise = observer.sun_rise_time(start, which='next')
+                params = dict(time=sunset, which='next')
+                twilights = [
+                    sunset,
+                    observer.twilight_evening_civil(**params),
+                    observer.twilight_evening_nautical(**params),
+                    observer.twilight_evening_astronomical(**params),
+                    observer.twilight_morning_astronomical(**params),
+                    observer.twilight_morning_nautical(**params),
+                    observer.twilight_morning_civil(**params),
+                    observer.sun_rise_time(**params),
+                ]
+
+                # add 'UTC' to each datetime object created above
+                twilights = [t.datetime.replace(tzinfo=pytz.utc)
+                             for t in twilights]
+
+                params = dict(color='k', alpha=0.08, linewidth=0)
+                airmass_axis_utc.axvspan(twilights[3], twilights[4], **params)
+                airmass_axis_utc.axvspan(twilights[2], twilights[5], **params)
+                airmass_axis_utc.axvspan(twilights[1], twilights[6], **params)
+                airmass_axis_utc.axvspan(twilights[0], twilights[7], **params)
 
                 # plot data
                 self._plot_line_with_initial_position(
                     alt_az_polar_axis,
                     np.radians(self._eclipses[eclipse]['AZ']),
                     self._eclipses[eclipse]['EL'], color='k')
+
+                times = [dates.num2date(i, tz=pytz.utc) for i in times]
                 self._plot_line_with_initial_position(
                     airmass_axis_utc, times,
                     self._eclipses[eclipse]['airmass'],
                     color='k')
-                airmass_axis_california = _format_axis_date_labels(
-                    airmass_axis_utc)
                 for ind, target in enumerate(
                         [target_info[key]['ID']
                          for key in target_info.keys()]):
@@ -472,52 +499,90 @@ class EclipsePrediction:
                                 list(target_info.keys())[ind]]['color'],
                             label=angular_separation.target_2_ephemeris[
                                 'targetname'][0][0], radius=radius)
-                primary_sep_axis_california = _format_axis_date_labels(
-                    primary_sep_axis_utc)
 
                 # information string, it's beastly but I don't know a better
                 # way of doing it...
-                info_string = 'California Start:' + '\n'
-                info_string += 'California End:' + '\n' * 2
-                info_string += 'Keck Start:' + '\n'
-                info_string += 'Keck End:' + '\n' * 2
-                info_string += 'Keck Sunset:' + '\n'
-                info_string += 'Keck Sunrise:' + '\n' * 2
-                info_string += f'Duration:   {duration}' + '\n'
-                info_string += 'Jupiter North Pole Angle:   '
-                info_string += fr"{polar_angle:.1f}$\degree$" + '\n'
-                info_string += f'{self._target_name} Relative Velocity:   '
-                info_string += \
-                    fr"${np.mean(self._eclipses[eclipse]['delta_rate']):.3f}$ "
-                info_string += 'km/s'
-                times_string = _convert_datetime_to_string(
-                    _convert_to_california_time(starting_time))
-                times_string += '\n'
-                times_string += _convert_datetime_to_string(
-                    _convert_to_california_time(ending_time))
-                times_string += '\n' * 2
+
+                night_of = _convert_to_hawaii_time(
+                    _convert_datetime_to_string(
+                        sunset.to_datetime()))
+                night_of_tz = night_of.strftime("%Z")
+
+                info_string = 'Eclipse Target:' + '\n'
+                info_string += f'Night of ({night_of_tz}):' + '\n'
+                info_string += 'Eclipse Start Time:' + '\n' * 3
+                info_string += 'Eclipse End Time:' + '\n' * 3
+                info_string += 'Maunakea Sunset:' + '\n'
+                info_string += 'Maunakea Sunrise:' + '\n'
+                info_string += f'Duration:' + '\n'
+                info_string += 'Jupiter North Pole Angle:' + '\n'
+                info_string += f'{self._target_name} Relative Velocity:'
+
+                night_of_date = night_of.strftime("%Y-%b-%d")
+                times_string = f'{self._target_name}' + '\n'
+                times_string += f'{night_of_date}' + '\n'
                 times_string += f'{starting_time} UTC' + '\n'
+                times_string += _convert_datetime_to_string(
+                    _convert_to_hawaii_time(starting_time)) + '\n'
+                times_string += _convert_datetime_to_string(
+                    _convert_to_california_time(starting_time)) + '\n'
                 times_string += f'{ending_time} UTC' + '\n'
-                times_string += '\n'
+                times_string += _convert_datetime_to_string(
+                    _convert_to_hawaii_time(ending_time)) + '\n'
+                times_string += _convert_datetime_to_string(
+                    _convert_to_california_time(ending_time)) + '\n'
+                sunset = _convert_datetime_to_string(sunset.datetime)
                 times_string += f'{sunset} UTC' + '\n'
-                times_string += f'{sunrise} UTC'
-                info_axis.text(0.05, 0.95, info_string, linespacing=1.67,
-                               ha='left', va='top', fontsize=6)
-                info_axis.text(0.4, 0.95, times_string, linespacing=1.67,
-                               ha='left', va='top',
-                               transform=info_axis.transAxes, fontsize=6)
-                info_axis.set_title('Eclipse Information', fontweight='bold')
+                sunrise = _convert_datetime_to_string(sunrise.datetime)
+                times_string += f'{sunrise} UTC' + '\n'
+                times_string += f'{duration}' + '\n'
+                times_string += f"{polar_angle:.1f}\u00b0" + '\n'
+                times_string += \
+                    fr"${np.mean(self._eclipses[eclipse]['delta_rate']):.3f}$ "
+                times_string += 'km/s'
+
+                info_axis.annotate(info_string, xy=(0, 1), linespacing=1.67,
+                                   ha='left', va='top', fontsize=6,
+                                   xytext=(0, -1), textcoords='offset points')
+                info_axis.annotate(times_string, xy=(0, 1), linespacing=1.67,
+                                   ha='left', va='top', fontsize=6,
+                                   xytext=(80, -1), textcoords='offset points')
+                info_axis.set_title(
+                    'Observation Information', fontweight='bold')
 
                 # set axis labels, limits and other parameters
-                airmass_axis_california.set_xlabel('Time (California)',
-                                                   fontweight='bold')
-                airmass_axis_utc.set_xticklabels([])
-                primary_sep_axis_utc.set_xlabel('Time (UTC)',
-                                                fontweight='bold')
-                primary_sep_axis_california.set_xticklabels([])
+                _set_date_axis_format(airmass_axis_utc, null=True)
+                _set_date_axis_format(primary_sep_axis_utc)
+                primary_sep_axis_utc.set_xlabel(
+                    'UTC Time', fontweight='bold')
+
+                dy = 0.28
+                primary_sep_axis_hi = \
+                    primary_sep_axis_utc.secondary_xaxis(-dy)
+                _set_date_axis_format(primary_sep_axis_hi,
+                                      tz=pytz.timezone('Pacific/Honolulu'))
+                tz_str = _convert_datetime_to_string(
+                    _convert_to_hawaii_time(starting_time)).split(' ')[-1]
+                offset = str(_convert_to_hawaii_time(starting_time))[-6:]
+                offset = offset.replace('-', '\u2212')
+                primary_sep_axis_hi.set_xlabel(
+                    f'{tz_str} Time [UTC{offset}]', fontweight='bold')
+
+                primary_sep_axis_ca = \
+                    primary_sep_axis_utc.secondary_xaxis(-2*dy)
+                _set_date_axis_format(primary_sep_axis_ca,
+                                      tz=pytz.timezone('America/Los_Angeles'))
+                tz_str = _convert_datetime_to_string(
+                    _convert_to_california_time(starting_time)).split(' ')[-1]
+                offset = str(_convert_to_california_time(starting_time))[-6:]
+                offset = offset.replace('-', '\u2212')
+                primary_sep_axis_ca.set_xlabel(
+                    f'{tz_str} Time [UTC{offset}]', fontweight='bold')
+
                 alt_az_polar_axis.set_rmin(90)
                 alt_az_polar_axis.set_rmax(0)
                 airmass_axis_utc.set_ylim(1, 2)
+                airmass_axis_utc.invert_yaxis()
                 primary_sep_axis_utc.set_ylim(bottom=0)
 
                 # save the figure
@@ -528,6 +593,9 @@ class EclipsePrediction:
                                 f'{filename_date_str.lower()}.pdf')
                 if not filepath.parent.exists():
                     filepath.mkdir(parents=True)
+                engine = fig.get_layout_engine()
+                dd = 0.02
+                engine.set(rect=(dd, dd, 1-2*dd, 1-2*dd))
                 plt.savefig(filepath)
                 plt.close(fig)
 

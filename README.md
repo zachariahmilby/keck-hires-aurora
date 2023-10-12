@@ -81,15 +81,25 @@ Here's an example of what one of those graphics looks like:
 
 ![](hiresaurora/anc/sample_graphic.png)
 
-It includes the starting and ending times in local California time (so you know 
-how awful of a night you'll have) and UTC, the closest sunrise and sunset times 
+It includes the night-of in Hawaii local time (for planning purposes), starting 
+and ending times in UTC, Hawaii and California time (so you know how awful of a 
+night you'll have), the closest sunrise and sunset times 
 to the eclipse, the duration of the eclipse in HH:MM format, the rotation angle 
 of Jupiter's north pole and Ganymede's relative velocity. The lower left 
 graphic shows the position of the target satellite during the eclipse in 
 altitude/azimuth coordinates with an overlay of the Keck I pointing limits. The 
 upper right plot shows the target satellite airmass over the course of the 
-eclipse. The lower right plot shows the angular separation between the target 
-satellite, Jupiter and the other Galilean satellites.
+eclipse, with the background shading showing civil, nautical and astronomical 
+twilights along with night. This example eclipse goes beyond the end of 
+astronomical twilight, so the eclipse effectively ends earlier than Ganymede's 
+emergence from Jupiter's shadow. The lower right plot shows the angular 
+separation between the target satellite and Jupiter and the other Galilean 
+satellites. The right two plots share a common horizontal axis, and the three 
+relevant timeframes (UTC, Hawaii and California) appear below them. Notice that
+both the Hawaii and California times actually include midnight, so they begin 
+on June 7, not June 8 like UTC does. I've tried to indicate this with the UTC
+offset, but I couldn't really come up with a good way to show the change from 
+one date to another.
 
 I've also included the ability to automatically generate the list of offsets 
 and rates for manual telescope pointing and tracking. For example, if you are 
