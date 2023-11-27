@@ -109,6 +109,10 @@ _emission_lines = {
                                      species='[S II]'),
     '673.1 nm [S II]': _EmissionLine(wavelengths=[673.0713] * u.nm,
                                      species='[S II]'),
+    '731.9 nm [O II]': _EmissionLine(wavelengths=[731.8811, 731.9878] * u.nm,
+                                     species='[O II]'),
+    '733.0 nm [O II]': _EmissionLine(wavelengths=[732.9554, 733.0624] * u.nm,
+                                     species='[O II]'),
     '751.5 nm [Na I]': _EmissionLine(
         wavelengths=[750.7464, 751.7172, 752.0333] * u.nm,
         species='[Na I]'),
@@ -116,10 +120,6 @@ _emission_lines = {
                                   species='K I'),
     '769.9 nm K I': _EmissionLine(wavelengths=[769.8965] * u.nm,
                                   species='K I'),
-    '731.9 nm [O II]': _EmissionLine(wavelengths=[731.8811, 731.9878] * u.nm,
-                                     species='[O II]'),
-    '733.0 nm [O II]': _EmissionLine(wavelengths=[732.9554, 733.0624] * u.nm,
-                                     species='[O II]'),
     '772.5 nm [S I]': _EmissionLine(wavelengths=[772.5046] * u.nm,
                                     species='[S I]'),
     '777.4 nm O I': _EmissionLine(

@@ -948,6 +948,7 @@ class _LineData:
             background = _Background(
                 data=data_selection,
                 uncertainty=unc_selection,
+                wavelengths=wavelength_selection,
                 mask=mask.target_mask,
                 radius=mask.aperture_radius.value,
                 spectral_scale=spectral_scale,
@@ -1089,6 +1090,7 @@ class _LineData:
         background = _Background(
             data=data_selection,
             uncertainty=unc_selection,
+            wavelengths=wavelength_selection,
             mask=mask.target_mask,
             radius=mask.aperture_radius.value,
             spectral_scale=spectral_scale,

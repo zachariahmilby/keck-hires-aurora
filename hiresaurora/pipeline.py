@@ -128,3 +128,24 @@ class AuroraPipeline:
     @property
     def calibrated_data_directory(self) -> Path:
         return self._calibrated_data_directory
+
+
+if __name__ == "__main__":
+    aurora_pipeline = AuroraPipeline(
+        reduced_data_directory=Path('/Users/zachariahmilby/Documents/School/Planetary Sciences PhD/Projects/Galilean Satellite Aurora (Katherine de Kleer)/HIRES/Data/Io 2023-08-25/reduced'),
+        extended=True,
+        exclude_from_averaging=[0, 9],
+        skip=['486.1 nm H I'], smooth_background=True)
+    aurora_pipeline.run(trim_top=8, trim_bottom=8,
+                        aperture_radius=2.25*u.arcsec,
+                        average_aperture_scale=1, horizontal_offset=0)
+
+    aurora_pipeline = AuroraPipeline(
+        reduced_data_directory=Path(
+            '/Users/zachariahmilby/Documents/School/Planetary Sciences PhD/Projects/Galilean Satellite Aurora (Katherine de Kleer)/HIRES/Data/Ganymede 2021-06-08/reduced'),
+        extended=False,
+        exclude_from_averaging=[15, 16],
+        skip=None, smooth_background=True)
+    aurora_pipeline.run(trim_top=3, trim_bottom=2,
+                        aperture_radius=1.75 * u.arcsec,
+                        average_aperture_scale=1, horizontal_offset=0)
