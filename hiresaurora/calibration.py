@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 
 import astropy.constants as c
@@ -179,14 +180,16 @@ class _FluxCalibration:
         -------
         The calibrated data and ucnertainty.
         """
-        data /= target_size
-        unc /= target_size
-        calibrated_data = data / self.calibration_factors
-        data_nsr = unc / data
-        calibration_nsr = (self.calibration_factors_unc /
-                           self.calibration_factors)
-        calibrated_unc = np.abs(calibrated_data) * np.sqrt(
-            data_nsr ** 2 + calibration_nsr ** 2)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            data /= target_size
+            unc /= target_size
+            calibrated_data = data / self.calibration_factors
+            data_nsr = unc / data
+            calibration_nsr = (self.calibration_factors_unc /
+                               self.calibration_factors)
+            calibrated_unc = np.abs(calibrated_data) * np.sqrt(
+                data_nsr ** 2 + calibration_nsr ** 2)
         return calibrated_data.to(u.R / u.nm), calibrated_unc.to(u.R / u.nm)
 
     @property
