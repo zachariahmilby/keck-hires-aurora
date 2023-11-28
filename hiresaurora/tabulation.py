@@ -21,7 +21,7 @@ class TabulatedResults:
     """
 
     _superscripts = {'⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
-                     '⁵': '⁵5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
+                     '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
                      '⁺': '+', '⁻': '-'}
 
     def __init__(self, calibrated_data_path: str or Path, excluded: [int],
@@ -66,7 +66,7 @@ class TabulatedResults:
             for j, column in enumerate(columns):
                 brightness = subresult[f'{column} [R]'].to_numpy()[0]
                 try:
-                    uncertainty = np.min(
+                    uncertainty = np.max(
                         [subresult[f'{column} Unc. [R]'].to_numpy()[0],
                          subresult[f'{column} Std. [R]'].to_numpy()[0]])
                     fuzz = FuzzyQuantity(brightness, uncertainty)
