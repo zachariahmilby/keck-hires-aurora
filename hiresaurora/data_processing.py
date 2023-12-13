@@ -127,7 +127,7 @@ class _ImageData:
         """
         Query the JPL Horizons ephemeris tool to get ephemeris table.
         """
-        target = self._data_header['OBJECT']
+        target = self._data_header['TARGET']
         time = Time(self._data_header['DATE-OBS'], format='isot', scale='utc')
         ephemeris = _get_ephemeris(
             target=target, time=time, skip_daylight=False,
@@ -510,7 +510,7 @@ class _LineData:
         for key in list(data.header.keys()):
             if key not in ['XTENSION', 'SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1',
                            'NAXIS2', 'GCOUNT', 'PCOUNT', 'BUNIT', 'AIRMASS',
-                           'DATE-OBS', 'OBJECT', 'EXPTIME', 'IMAGETYP',
+                           'DATE-OBS', 'TARGET', 'EXPTIME', 'IMAGETYP',
                            'EXTNAME']:
                 del data.header[key]
 
@@ -531,7 +531,7 @@ class _LineData:
             data.header['COMMENT'] = comment
         for key in list(data.header.keys()):
             if key not in ['XTENSION', 'SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1',
-                           'NAXIS2', 'GCOUNT', 'PCOUNT', 'BUNIT', 'OBJECT',
+                           'NAXIS2', 'GCOUNT', 'PCOUNT', 'BUNIT', 'TARGET',
                            'IMAGETYP', 'EXTNAME']:
                 del data.header[key]
 
@@ -589,7 +589,7 @@ class _LineData:
         Set primary extension header information (not observation-specific).
         """
         del primary_hdu.header['BUNIT']
-        del primary_hdu.header['OBJECT']
+        del primary_hdu.header['TARGET']
         del primary_hdu.header['AIRMASS']
         # del primary_hdu.header['DATE-OBS']
         del primary_hdu.header['EXPTIME']
@@ -915,7 +915,7 @@ class _LineData:
         else:
             traces = self._data.trace
         for data, trace in zip(self._data.science, traces):
-            geometry = Geometry(target=data.data_header['OBJECT'],
+            geometry = Geometry(target=data.data_header['TARGET'],
                                 observation_time=data.data_header['DATE-OBS'])
             data_selection = data.data[order][select]
             unc_selection = data.uncertainty[order][select]

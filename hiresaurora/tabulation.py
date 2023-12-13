@@ -48,8 +48,8 @@ class TabulatedResults:
         columns = [s for s in results.columns
                    if s not in ['Observation Time', 'Excluded from Averaging',
                                 'Distance from Plasma Sheet Equator [R_J]']]
-        columnlabels = np.array([s for s in columns[0::3]])
-        columns = np.array([s.replace(' [R]', '') for s in columns[0::3]])
+        columnlabels = np.array([s for s in columns[0::2]])
+        columns = np.array([s.replace(' [R]', '') for s in columns[0::2]])
         rows = results['Observation Time'].to_numpy(dtype=str)
         rowlabels = [Time(t, format='isot').to_datetime().strftime('%H:%M:%S')
                      for t in rows[:-2]]
@@ -66,9 +66,7 @@ class TabulatedResults:
             for j, column in enumerate(columns):
                 brightness = subresult[f'{column} [R]'].to_numpy()[0]
                 try:
-                    uncertainty = np.max(
-                        [subresult[f'{column} Unc. [R]'].to_numpy()[0],
-                         subresult[f'{column} Std. [R]'].to_numpy()[0]])
+                    uncertainty = subresult[f'{column} Std. [R]'].to_numpy()[0]
                     fuzz = FuzzyQuantity(brightness, uncertainty)
                     label = fuzz.printable
                     label = label.replace(' R', '')
@@ -166,17 +164,17 @@ class TabulatedResults:
                     new_data[f'{name} [R]'] = np.round(brightnesses, 4)
                 except TypeError:
                     new_data[f'{name} [R]'] = brightnesses
-                uncertainties = results[f'{name} Unc. [R]'].to_numpy()
-                if 'error' in uncertainties.tolist():
-                    avg_uncertainty = 'error'
-                else:
-                    avg_uncertainty = \
-                        np.sqrt(np.sum(uncertainties[good]**2)) / n
-                uncertainties = np.insert(uncertainties, -1, avg_uncertainty)
-                try:
-                    new_data[f'{name} Unc. [R]'] = np.round(uncertainties, 4)
-                except TypeError:
-                    new_data[f'{name} Unc. [R]'] = uncertainties
+                # uncertainties = results[f'{name} Unc. [R]'].to_numpy()
+                # if 'error' in uncertainties.tolist():
+                #     avg_uncertainty = 'error'
+                # else:
+                #     avg_uncertainty = \
+                #         np.sqrt(np.sum(uncertainties[good]**2)) / n
+                # uncertainties = np.insert(uncertainties, -1, avg_uncertainty)
+                # try:
+                #     new_data[f'{name} Unc. [R]'] = np.round(uncertainties, 4)
+                # except TypeError:
+                #     new_data[f'{name} Unc. [R]'] = uncertainties
                 stddevs = results[f'{name} Std. [R]'].to_numpy()
                 if 'error' in stddevs.tolist():
                     avg_stddev = 'error'

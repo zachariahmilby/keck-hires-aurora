@@ -217,7 +217,7 @@ class PostageStamps:
         """
         Retrieve apparent angular radius of target satellite in arcseconds.
         """
-        ephemeris = _get_ephemeris(target=data_header['OBJECT'],
+        ephemeris = _get_ephemeris(target=data_header['TARGET'],
                                    time=data_header['DATE-OBS'])
         radius = ephemeris['ang_width'].value[0] / 2
         unit = ephemeris['ang_width'].unit
