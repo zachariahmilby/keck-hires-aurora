@@ -38,11 +38,11 @@ def contour_rect_slow(im):
     return lines
 
 
-def _place_colorbar(img: plt.cm.ScalarMappable, unit: str, axis: plt.Axes):
+def _place_colorbar(img: plt.cm.ScalarMappable, axis: plt.Axes):
     """
     Place a colorbar and label it with units.
     """
-    plt.colorbar(img, ax=axis, label=unit, pad=0.0125, aspect=15)
+    plt.colorbar(img, ax=axis, label='Brightness [R]', pad=0.0125, aspect=15)
 
 
 def _place_label(label: str, axis: plt.Axes):
@@ -65,22 +65,20 @@ def make_quicklook(file_path: Path):
 
     with fits.open(file_path) as hdul:
         header = hdul['PRIMARY'].header
-        raw_data = hdul['RAW'].data
+        data = hdul['PRIMARY'].data
         background = hdul['BACKGROUND_FIT'].data
+        bgsub_data = data - background
         edges = hdul['APERTURE_EDGES'].data
-        calibrated_data = hdul['CALIBRATED'].data
-        calibrated_unc = hdul['CALIBRATED_UNC'].data
-        snr = calibrated_data / calibrated_unc
 
         cmap = plt.get_cmap('viridis')
         dunit = 0.06
         aspect_ratio = header['SPASCALE'] / header['SPESCALE']
-        n_spa, n_spe = raw_data.shape
-        height = dunit * n_spa * 4
+        n_spa, n_spe = data.shape
+        height = dunit * n_spa * 3
         width = dunit * n_spe / aspect_ratio
-        height += 4 * dunit
+        height += 6 * dunit
         width += 2 * dunit
-        fig, axes = plt.subplots(4, figsize=(width, height),
+        fig, axes = plt.subplots(3, figsize=(width, height),
                                  layout='constrained', clear=True)
         [axis.xaxis.set_major_locator(ticker.NullLocator()) for axis in axes]
         [axis.xaxis.set_minor_locator(ticker.NullLocator()) for axis in axes]
@@ -95,45 +93,32 @@ def make_quicklook(file_path: Path):
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
-            norm = colors.Normalize(vmin=np.nanpercentile(raw_data, 1),
-                                    vmax=np.nanpercentile(raw_data, 99.9))
+            norm = colors.Normalize(vmin=np.nanpercentile(data, 1),
+                                    vmax=np.nanpercentile(data, 99.9))
         spascale = hdul['PRIMARY'].header['SPASCALE']
         spescale = hdul['PRIMARY'].header['SPESCALE']
-        x, y = np.meshgrid(np.arange(raw_data.shape[1]) * spescale,
-                           np.arange(raw_data.shape[0]) * spascale)
-        img0 = axes[0].pcolormesh(x, y, raw_data, norm=norm, cmap=cmap)
-        _place_colorbar(img=img0, unit=hdul['RAW'].header['BUNIT'],
-                        axis=axes[0])
-        _place_label(label='Raw Data', axis=axes[0])
+        x, y = np.meshgrid(np.arange(data.shape[1]) * spescale,
+                           np.arange(data.shape[0]) * spascale)
+        img0 = axes[0].pcolormesh(x, y, data, norm=norm, cmap=cmap)
+        _place_colorbar(img=img0, axis=axes[0])
+        axes[0].set_title('Calibrated Data')
+
         img1 = axes[1].pcolormesh(x, y, background, norm=norm, cmap=cmap)
-        _place_colorbar(img=img1, unit=hdul['BACKGROUND_FIT'].header['BUNIT'],
-                        axis=axes[1])
-        _place_label(label='Background Fit', axis=axes[1])
+        _place_colorbar(img=img1, axis=axes[1])
+        axes[1].set_title('Background Fit')
 
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
-            norm = colors.Normalize(vmin=np.nanpercentile(snr, 1),
-                                    vmax=np.nanpercentile(snr, 99.9))
-        img2 = axes[2].pcolormesh(x, y, snr, norm=norm, cmap=cmap)
-        _place_colorbar(img=img2, unit='Ratio',
-                        axis=axes[2])
-        _place_label(label=f'Signal-to-Noise Ratio w/ Aperture{end}',
-                     axis=axes[2])
+            norm = colors.Normalize(vmin=np.nanpercentile(bgsub_data, 1),
+                                    vmax=np.nanpercentile(bgsub_data, 99.9))
+        img2 = axes[2].pcolormesh(x, y, bgsub_data, norm=norm, cmap=cmap)
+        _place_colorbar(img=img2, axis=axes[2])
+        axes[2].set_title(f'Background-Subtracted Data w/ Aperture{end}')
         lines = contour_rect_slow(edges)
         for line in lines:
             axes[2].plot(np.array(line[1]) * spescale,
                          np.array(line[0]) * spascale,
                          color='red')
-
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            norm = colors.Normalize(
-                vmin=np.nanpercentile(calibrated_data, 1),
-                vmax=np.nanpercentile(calibrated_data, 99.9))
-        img3 = axes[3].pcolormesh(x, y, calibrated_data, norm=norm, cmap=cmap)
-        _place_colorbar(img=img3, unit=hdul['CALIBRATED'].header['BUNIT'],
-                        axis=axes[3])
-        _place_label(label=f'Calibrated Data', axis=axes[3])
 
         plt.savefig(savename)
         plt.close(fig)

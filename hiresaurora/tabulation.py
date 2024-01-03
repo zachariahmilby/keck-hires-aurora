@@ -66,7 +66,7 @@ class TabulatedResults:
             for j, column in enumerate(columns):
                 brightness = subresult[f'{column} [R]'].to_numpy()[0]
                 try:
-                    uncertainty = subresult[f'{column} Std. [R]'].to_numpy()[0]
+                    uncertainty = subresult[f'{column} Unc. [R]'].to_numpy()[0]
                     fuzz = FuzzyQuantity(brightness, uncertainty)
                     label = fuzz.printable
                     label = label.replace(' R', '')
@@ -84,7 +84,7 @@ class TabulatedResults:
                         snr = np.nan
                     if snr >= 2.0:
                         detected[i, j] = True
-                except weird_error:
+                except (weird_error, ValueError):
                     data[i, j] = 'error'
                     detected[i, j] = False
         cell_colors = np.full(data.shape, fill_value='red', dtype=object)
@@ -149,42 +149,32 @@ class TabulatedResults:
         distances = results[key].to_numpy()
         distances = np.insert(distances, -1, distances[-1])
         new_data[key] = distances
-        good = np.where(
+        s_ = np.where(
             results['Excluded from Averaging'].to_numpy()[:-1] == 0)[0]
-        n = good.size
         for name in self._aurora_lines.names:
             try:
                 brightnesses = results[f'{name} [R]'].to_numpy()
+                uncertainties = results[f'{name} Unc. [R]'].to_numpy()
+                weights = 1 / (uncertainties ** 2)
                 if 'error' in brightnesses.tolist():
                     avg_brightness = 'error'
                 else:
-                    avg_brightness = np.mean(brightnesses[good])
+                    avg_brightness = np.sum(
+                        brightnesses[s_] * weights[s_]) / np.sum(weights[s_])
                 brightnesses = np.insert(brightnesses, -1, avg_brightness)
                 try:
                     new_data[f'{name} [R]'] = np.round(brightnesses, 4)
                 except TypeError:
                     new_data[f'{name} [R]'] = brightnesses
-                # uncertainties = results[f'{name} Unc. [R]'].to_numpy()
-                # if 'error' in uncertainties.tolist():
-                #     avg_uncertainty = 'error'
-                # else:
-                #     avg_uncertainty = \
-                #         np.sqrt(np.sum(uncertainties[good]**2)) / n
-                # uncertainties = np.insert(uncertainties, -1, avg_uncertainty)
-                # try:
-                #     new_data[f'{name} Unc. [R]'] = np.round(uncertainties, 4)
-                # except TypeError:
-                #     new_data[f'{name} Unc. [R]'] = uncertainties
-                stddevs = results[f'{name} Std. [R]'].to_numpy()
-                if 'error' in stddevs.tolist():
-                    avg_stddev = 'error'
+                if 'error' in uncertainties.tolist():
+                    avg_uncertainty = 'error'
                 else:
-                    avg_stddev = np.sqrt(np.sum(stddevs[good] ** 2)) / n
-                stddevs = np.insert(stddevs, -1, avg_stddev)
+                    avg_uncertainty = 1 / np.sqrt(np.sum(weights[s_]))
+                uncertainties = np.insert(uncertainties, -1, avg_uncertainty)
                 try:
-                    new_data[f'{name} Std. [R]'] = np.round(stddevs, 4)
+                    new_data[f'{name} Unc. [R]'] = np.round(uncertainties, 4)
                 except TypeError:
-                    new_data[f'{name} Std. [R]'] = stddevs
+                    new_data[f'{name} Unc. [R]'] = uncertainties
             except KeyError:
                 continue
         new_data['Excluded from Averaging'] = np.insert(
@@ -206,28 +196,24 @@ class TabulatedResults:
             times = []
             brightnesses = []
             uncertainties = []
-            stddevs = []
             distances = []
             if excluded is None:
                 excluded = np.zeros(len(files)).astype(bool)
             for i, file in enumerate(files):
                 with fits.open(file) as hdul:
                     primary_header = hdul['PRIMARY'].header
-                    data_header = hdul['CALIBRATED'].header
                     if file.name == 'average.fits.gz':
                         times.append('Average Image')
                     else:
-                        times.append(data_header['DATE-OBS'])
-                    brightness = primary_header['BGHTNESS']
-                    uncertainty = primary_header['BGHT_UNC']
-                    stddev = primary_header['BGHT_STD']
+                        times.append(primary_header['DATE-OBS'])
+                    brightness = primary_header['BRGHT']
+                    uncertainty = primary_header['BRGHTUNC']
                     try:
                         distance = primary_header['PS_DIST']
                     except KeyError:
                         distance = np.nan
                     brightnesses.append(brightness)
                     uncertainties.append(uncertainty)
-                    stddevs.append(stddev)
                     distances.append(distance)
                 if self._excluded is not None:
                     if i in self._excluded:
@@ -241,7 +227,6 @@ class TabulatedResults:
             results['Distance from Plasma Sheet Equator [R_J]'] = distances
             results[f'{name} [R]'] = brightnesses
             results[f'{name} Unc. [R]'] = uncertainties
-            results[f'{name} Std. [R]'] = stddevs
         results['Excluded from Averaging'] = excluded
         results = self._calculate_averages_of_individuals(results=results)
         results.to_csv(savename, index=False, sep=',')

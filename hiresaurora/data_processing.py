@@ -1,5 +1,6 @@
 import warnings
 from pathlib import Path
+from copy import deepcopy
 
 import astropy.units as u
 import numpy as np
@@ -15,6 +16,7 @@ from hiresaurora.general import _doppler_shift_wavelengths, AuroraLines, \
     FuzzyQuantity, _log
 from hiresaurora.graphics import make_quicklook
 from hiresaurora.observing_geometry import Geometry
+from hiresaurora.masking import _Mask
 
 
 class TraceFitError(Exception):
@@ -244,148 +246,6 @@ class _RawData:
         return self._trace_data
 
 
-class _Mask:
-    """
-    Class to generate aperture masks.
-    """
-    def __init__(self, data: u.Quantity, trace_center: float,
-                 horizontal_positions: [float],
-                 horizontal_offset: int or float, spatial_scale: float,
-                 spectral_scale: float, aperture_radius: u.Quantity,
-                 satellite_radius: u.Quantity):
-        """
-        Parameters
-        ----------
-        data : u.Quantity
-            The data.
-        trace_center : float
-            The fractional vertical pixel position of the trace.
-        horizontal_positions : [float]
-            The fractional horizontal pixel position(s) of the emission lines.
-        horizontal_offset : int or float
-            Any additional offset if the wavelength solution is off.
-        spatial_scale : float
-            The spatial scale, probably in [arcsec/bin] since it's read from
-            the reduced FITS header.
-        spectral_scale : float
-            The spectral scale, probably in [arcsec/bin] since it's read from
-            the reduced FITS header.
-        aperture_radius : u.Quantity
-            The radius of the extraction aperture in angular units (like
-            arcsec).
-        satellite_radius : u.Quantity
-            The angular radius of the target satellite.
-        """
-        self._data = data
-        if trace_center == 'error':
-            trace_center = data.shape[0] / 2
-        self._trace_center = trace_center
-        self._horizontal_positions = horizontal_positions
-        self._horizontal_offset = horizontal_offset
-        self._spatial_scale = spatial_scale
-        self._spectral_scale = spectral_scale
-        self._aperture_radius = aperture_radius.to(u.arcsec)
-        self._satellite_radius = satellite_radius.to(u.arcsec)
-        self._masks = self._make_masks()
-
-    def _make_masks(self):
-        """
-        Make a target mask (isolating the background) and background mask
-        (isolating the target).
-        """
-        shape = self._data.shape
-        x, y = np.meshgrid(np.arange(shape[1]) * self._spectral_scale,
-                           np.arange(shape[0]) * self._spatial_scale)
-        target_masks = []
-        background_masks = []
-        edges = []
-        if self._trace_center is None:
-            self._trace_center = shape[0] / 2
-        for horizontal_position in self._horizontal_positions:
-            horizontal_position += self._horizontal_offset
-            distance = np.sqrt(
-                (x - self._spectral_scale * horizontal_position) ** 2 +
-                (y - self._spatial_scale * self._trace_center) ** 2)
-            mask = np.ones_like(distance)
-            mask[np.where(distance < self._aperture_radius.value)] = np.nan
-            mask[np.where(distance >= self._aperture_radius.value)] = 1
-            target_masks.append(mask)
-            mask = np.ones_like(distance)
-            mask[np.where(distance < self._aperture_radius.value)] = 1
-            mask[np.where(distance >= self._aperture_radius.value)] = np.nan
-            background_masks.append(mask)
-            edge = np.zeros_like(mask)
-            edge[np.where(distance < self._aperture_radius.value)] = 1
-            edges.append(edge)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            target_mask = np.mean(target_masks, axis=0)
-            background_mask = np.nanmean(background_masks, axis=0)
-        edges = np.sum(edges, axis=0)
-        edges[np.where(edges > 0)] = 1
-        return {'target_mask': target_mask,
-                'target_masks': np.array(target_masks),
-                'background_mask': background_mask,
-                'background_masks': np.array(background_masks),
-                'edges': edges, 'x': x, 'y': y}
-
-    @property
-    def target_mask(self) -> np.ndarray:
-        return self._masks['target_mask']
-
-    @property
-    def target_masks(self) -> np.ndarray:
-        return self._masks['target_masks']
-
-    @property
-    def background_mask(self) -> np.ndarray:
-        return self._masks['background_mask']
-
-    @property
-    def background_masks(self) -> np.ndarray:
-        return self._masks['background_masks']
-
-    @property
-    def edges(self) -> np.ndarray:
-        return self._masks['edges']
-
-    @property
-    def x(self) -> np.ndarray:
-        return self._masks['x']
-
-    @property
-    def y(self) -> np.ndarray:
-        return self._masks['y']
-
-    @property
-    def horizontal_positions(self) -> np.ndarray:
-        return self._horizontal_positions + self._horizontal_offset
-
-    @property
-    def vertical_position(self) -> float:
-        return self._trace_center
-
-    @property
-    def aperture_radius(self) -> u.Quantity:
-        return self._aperture_radius
-
-    @property
-    def aperture_size(self) -> u.Quantity:
-        return np.pi * self._aperture_radius ** 2
-
-    @property
-    def satellite_radius(self) -> u.Quantity:
-        return self._satellite_radius
-
-    @property
-    def satellite_size(self) -> u.Quantity:
-        return np.pi * self._satellite_radius ** 2
-
-    @property
-    def pixel_size(self) -> u.Quantity:
-        return self._spectral_scale * self._spectral_scale * u.arcsec**2
-
-
 # noinspection DuplicatedCode
 class _LineData:
     """
@@ -396,7 +256,7 @@ class _LineData:
                  aperture_radius: u.Quantity, average_aperture_scale: float,
                  horizontal_offset: int or float or dict = 0.0,
                  trim_top: int = 2, trim_bottom: int = 2,
-                 smooth_background: bool = True):
+                 background_residual: [str] = None):
         """
         Parameters
         ----------
@@ -425,10 +285,6 @@ class _LineData:
             Number of additional rows to trim off of the bottom of the
             rectified data (the background fitting significantly improves if
             the sawtooth slit edges are excluded). The default is 2.
-        smooth_background : bool
-            Whether or not to apply a Gaussian kernel to smooth the fitted
-            background. Sometimes the subtraction can be much worse (especially
-            around atmospheric lines), so you could turn this off if it is.
         """
         self._log = log
         self._reduced_data_directory = Path(reduced_data_directory)
@@ -437,7 +293,7 @@ class _LineData:
         self._horizontal_offset = horizontal_offset
         self._trim_top = trim_top
         self._trim_bottom = trim_bottom
-        self._smooth_background = smooth_background
+        self._background_residual = background_residual
         self._data = _RawData(self._reduced_data_directory)
         self._save_directory = self._parse_save_directory()
 
@@ -567,12 +423,10 @@ class _LineData:
 
     def _set_primary_header(self,
                             primary_hdu: fits.PrimaryHDU,
+                            unit: u.Unit,
                             line_name: str,
-                            brightness: u.Quantity,
-                            brightness_unc: u.Quantity,
-                            brightness_std: u.Quantity,
+                            brightness: u.Quantity, brightness_unc: u.Quantity,
                             trace: float = None, trace_unc: float = None,
-                            linex: [float] = None,
                             t_corr: Time = None,
                             lat_mag: u.Quantity = None,
                             lon_mag: u.Quantity = None,
@@ -583,18 +437,22 @@ class _LineData:
                             angular_radius: u.Quantity = None,
                             relative_velocity: u.Quantity = None,
                             distance_to_target: u.Quantity = None,
-                            north_pole_angle: u.Quantity = None
+                            north_pole_angle: u.Quantity = None,
                             ):
         """
         Set primary extension header information (not observation-specific).
         """
-        del primary_hdu.header['BUNIT']
         del primary_hdu.header['TARGET']
         del primary_hdu.header['AIRMASS']
-        # del primary_hdu.header['DATE-OBS']
         del primary_hdu.header['EXPTIME']
+        primary_hdu.header['BUNIT'] = f'{unit}'
         primary_hdu.header.set('LINE', f'{line_name}',
                                'targeted emission line')
+        qty = FuzzyQuantity(value=brightness, uncertainty=brightness_unc)
+        primary_hdu.header.set('BRGHT', float(qty.value_formatted),
+                               f'best-fit brightness [{qty.unit}]')
+        primary_hdu.header.set('BRGHTUNC', float(qty.uncertainty_formatted),
+                               f'best-fit brightness [{qty.unit}]')
         if (trace is not None) and (trace != 'error'):
             if (trace_unc is not None) and (trace != 'error'):
                 fuzz = FuzzyQuantity(trace, trace_unc)
@@ -609,11 +467,6 @@ class _LineData:
                                    'trace fit fractional pixel location')
             primary_hdu.header.set('TRACEUNC', trace_unc,
                                    'trace fit fractional pixel location')
-        if linex is not None:
-            for i, line in enumerate(linex):
-                primary_hdu.header.set(
-                    f'LINEPIX{i}', np.round(line, 4),
-                    'emission line fractional pixel location')
         if t_corr is not None:
             primary_hdu.header.set('DATECORR', t_corr.isot,
                                    'time corrected for light travel time')
@@ -657,47 +510,23 @@ class _LineData:
                 ('NPANG', self._round(north_pole_angle.value, 4),
                  f'north pole angle [{north_pole_angle.unit}]'),
                 after=True)
-        if (np.isnan(brightness) or np.isnan(brightness_unc)
-                or np.isnan(brightness_std)):
-            brightness = 'error'
-            brightness_unit = 'error'
-            brightness_unc = 'error'
-            brightness_unc_unit = 'error'
-            brightness_std = 'error'
-            brightnessstd_unit = 'error'
-        else:
-            brightness_unit = brightness.unit
-            brightness = brightness.value
-            brightness_unc_unit = brightness_unc.unit
-            brightness_unc = brightness_unc.value
-            brightnessstd_unit = brightness_std.unit
-            brightness_std = brightness_std.value
-        primary_hdu.header.set(
-            'BGHTNESS', brightness,
-            f'retrieved brightness [{brightness_unit}]')
-        primary_hdu.header.set(
-            'BGHT_UNC', brightness_unc,
-            f'retrieved brightness uncertainty [{brightness_unc_unit}]')
-        primary_hdu.header.set(
-            'BGHT_STD', brightness_std,
-            f'retrieved brightness standard deviation [{brightnessstd_unit}]')
 
     # noinspection DuplicatedCode
     def save_individual_fits(
             self, line: u.Quantity, line_name: str,
-            data_header: fits.Header, trace_header: fits.Header,
-            raw_data: u.Quantity, raw_unc: u.Quantity,
-            trace_data: u.Quantity, trace_unc: u.Quantity,
+            data_header: fits.Header,
             trace_fit: float, trace_fit_unc: float,
-            linex: [float], geometry: Geometry, angular_radius: u.Quantity,
+            geometry: Geometry, angular_radius: u.Quantity,
             relative_velocity: u.Quantity,
-            background: u.Quantity, background_unc: u.Quantity,
             target_masks: np.ndarray, background_masks: np.ndarray,
             aperture_edges: np.ndarray,
-            calibrated_data: u.Quantity, calibrated_unc: u.Quantity,
-            wavelength_centers: u.Quantity, wavelength_edges: u.Quantity,
+            image_data: u.Quantity, image_data_unc: u.Quantity,
+            image_background: u.Quantity,
+            wavelength_centers_rest: u.Quantity,
+            wavelength_edges_rest: u.Quantity,
+            wavelength_centers_shifted: u.Quantity,
+            wavelength_edges_shifted: u.Quantity,
             brightness: u.Quantity, brightness_unc: u.Quantity,
-            brightness_std: u.Quantity,
             save_directory: Path, file_name: str):
         """
         Save calibrated data for an individual observation as a FITS file.
@@ -706,36 +535,36 @@ class _LineData:
             warnings.simplefilter(
                 'ignore', category=fits.verify.VerifyWarning)
 
-            primary_hdu = fits.PrimaryHDU(header=data_header.copy())
-            self._set_primary_header(primary_hdu=primary_hdu,
-                                     line_name=line_name,
-                                     brightness=brightness,
-                                     brightness_unc=brightness_unc,
-                                     brightness_std=brightness_std,
-                                     trace=trace_fit, trace_unc=trace_fit_unc,
-                                     linex=linex,
-                                     angular_radius=angular_radius,
-                                     relative_velocity=relative_velocity,
-                                     t_corr=geometry.light_corrected_time,
-                                     lat_mag=geometry.magnetic_latitude,
-                                     lon_mag=geometry.magnetic_longitude,
-                                     orb_dist=geometry.orbital_distance,
-                                     height=geometry.height,
-                                     lat_obs=geometry.sub_observer_latitude,
-                                     lon_obs=geometry.sub_observer_longitude,
-                                     distance_to_target=geometry.distance,
-                                     north_pole_angle=geometry.north_pole_angle
-                                     )
+            primary_hdu = fits.PrimaryHDU(data=image_data.value,
+                                          header=data_header.copy())
+            self._set_primary_header(
+                primary_hdu=primary_hdu,
+                unit=image_data.unit,
+                line_name=line_name,
+                trace=trace_fit, trace_unc=trace_fit_unc,
+                angular_radius=angular_radius,
+                relative_velocity=relative_velocity,
+                t_corr=geometry.light_corrected_time,
+                lat_mag=geometry.magnetic_latitude,
+                lon_mag=geometry.magnetic_longitude,
+                orb_dist=geometry.orbital_distance,
+                height=geometry.height,
+                lat_obs=geometry.sub_observer_latitude,
+                lon_obs=geometry.sub_observer_longitude,
+                distance_to_target=geometry.distance,
+                north_pole_angle=geometry.north_pole_angle,
+                brightness=brightness,
+                brightness_unc=brightness_unc)
+            primary_unc_hdu = self._make_image_hdu(
+                data=image_data_unc, header=None, name='PRIMARY_UNC',
+                comment='Primary (wavelength-integrated imaging data) '
+                        'uncertainty.')
+            primary_background_hdu = self._make_image_hdu(
+                data=image_background, header=data_header.copy(),
+                name='BACKGROUND_FIT',
+                comment='Best-fit background.')
             targeted_lines_hdu = self._make_image_hdu(data=line, header=None,
                                                       name='TARGETED_LINES')
-            raw_hdu = self._make_image_hdu(
-                data=raw_data, header=data_header.copy(), name='RAW')
-            raw_unc_hdu = self._make_image_hdu(
-                data=raw_unc, header=data_header.copy(), name='RAW_UNC')
-            trace_hdu = self._make_image_hdu(
-                data=trace_data, header=trace_header.copy(), name='TRACE')
-            trace_unc_hdu = self._make_image_hdu(
-                data=trace_unc, header=trace_header.copy(), name='TRACE_UNC')
             target_mask_hdu = self._make_image_hdu(
                 data=target_masks, header=None, name='TARGET_MASKS',
                 comment='Mask(s) used to isolate background when calculating '
@@ -745,33 +574,36 @@ class _LineData:
                 comment='Mask(s) used to isolate target when calculating '
                         'emission brightness.')
             aperture_edges_hdu = self._make_image_hdu(
-                data=aperture_edges, header=None, name='APERTURE_EDGES')
-            background_fit_hdu = self._make_image_hdu(
-                data=background, header=data_header.copy(),
-                name='BACKGROUND_FIT')
-            background_fit_unc_hdu = self._make_image_hdu(
-                data=background_unc, header=data_header.copy(),
-                name='BACKGROUND_FIT_UNC')
-            calibrated_hdu = self._make_image_hdu(
-                data=calibrated_data, header=data_header.copy(),
-                name='CALIBRATED')
-            calibrated_unc_hdu = self._make_image_hdu(
-                data=calibrated_unc, header=data_header.copy(),
-                name='CALIBRATED_UNC')
-            wavelength_centers_hdu = self._make_image_hdu(
-                data=wavelength_centers, header=None,
-                name='WAVELENGTH_CENTERS',
+                data=aperture_edges, header=None, name='APERTURE_EDGES',
+                comment='Pixel coordinates of edges of target aperture.')
+            rest_wavelength_centers_hdu = self._make_image_hdu(
+                data=wavelength_centers_rest, header=None,
+                name='WAVELENGTH_CENTERS_REST',
+                comment='Rest frame (Earth) wavelengths.')
+            rest_wavelength_edges_hdu = self._make_image_hdu(
+                data=wavelength_edges_rest, header=None,
+                name='WAVELENGTH_EDGES_REST',
+                comment='Rest frame (Earth) wavelengths.')
+            shifted_wavelength_centers_hdu = self._make_image_hdu(
+                data=wavelength_centers_shifted, header=None,
+                name='WAVELENGTH_CENTERS_SHIFTED',
                 comment='Doppler-shifted wavelengths.')
-            wavelength_edges_hdu = self._make_image_hdu(
-                data=wavelength_edges, header=None, name='WAVELENGTH_EDGES',
+            shifted_wavelength_edges_hdu = self._make_image_hdu(
+                data=wavelength_edges_shifted, header=None,
+                name='WAVELENGTH_EDGES_SHIFTED',
                 comment='Doppler-shifted wavelengths.')
 
-            hdus = [primary_hdu, targeted_lines_hdu, raw_hdu, raw_unc_hdu,
-                    trace_hdu, trace_unc_hdu, target_mask_hdu,
-                    background_mask_hdu, aperture_edges_hdu,
-                    background_fit_hdu, background_fit_unc_hdu,
-                    calibrated_hdu, calibrated_unc_hdu, wavelength_centers_hdu,
-                    wavelength_edges_hdu]
+            hdus = [primary_hdu, primary_unc_hdu,
+                    primary_background_hdu,
+                    targeted_lines_hdu,
+                    target_mask_hdu,
+                    background_mask_hdu,
+                    aperture_edges_hdu,
+                    rest_wavelength_centers_hdu,
+                    rest_wavelength_edges_hdu,
+                    shifted_wavelength_centers_hdu,
+                    shifted_wavelength_edges_hdu,
+                    ]
             hdul = fits.HDUList(hdus)
             output_directory = Path(save_directory, line_name)
             make_directory(output_directory)
@@ -785,16 +617,17 @@ class _LineData:
     def save_average_fits(
             self, line: u.Quantity, line_name: str,
             data_header: fits.Header,
-            raw_data: u.Quantity, raw_unc: u.Quantity,
             tracefit: float,
             angular_radius: u.Quantity,
-            background: u.Quantity, background_unc: u.Quantity,
             target_masks: np.ndarray, background_masks: np.ndarray,
             aperture_edges: np.ndarray,
-            calibrated_data: u.Quantity, calibrated_unc: u.Quantity,
-            wavelength_centers: u.Quantity, wavelength_edges: u.Quantity,
+            image_data: u.Quantity,
+            image_background: u.Quantity,
+            wavelength_centers_rest: u.Quantity,
+            wavelength_edges_rest: u.Quantity,
+            wavelength_centers_shifted: u.Quantity,
+            wavelength_edges_shifted: u.Quantity,
             brightness: u.Quantity, brightness_unc: u.Quantity,
-            brightness_std: u.Quantity,
             save_directory: Path):
         """
         Save calibrated data for an average observation as a FITS file.
@@ -803,61 +636,60 @@ class _LineData:
             warnings.simplefilter(
                 'ignore', category=fits.verify.VerifyWarning)
 
-            primary_hdu = fits.PrimaryHDU(header=data_header.copy())
-            self._set_primary_header(primary_hdu=primary_hdu,
-                                     line_name=line_name,
-                                     brightness=brightness,
-                                     brightness_unc=brightness_unc,
-                                     brightness_std=brightness_std,
-                                     trace=tracefit,
-                                     angular_radius=angular_radius)
-            targeted_lines_hdu = self._make_image_hdu(data=line,
-                                                      header=None,
-                                                      name='TARGETED_LINES')
-            raw_hdu = self._make_image_hdu(
-                data=raw_data, header=data_header.copy(), name='RAW')
-            raw_unc_hdu = self._make_image_hdu(
-                data=raw_unc, header=data_header.copy(),
-                name='RAW_UNC')
+            primary_hdu = fits.PrimaryHDU(data=image_data.value,
+                                          header=data_header.copy())
+            self._set_primary_header(
+                primary_hdu=primary_hdu,
+                unit=image_data.unit,
+                line_name=line_name,
+                trace=tracefit,
+                angular_radius=angular_radius,
+                brightness=brightness,
+                brightness_unc=brightness_unc)
+            primary_background_hdu = self._make_image_hdu(
+                data=image_background, header=data_header.copy(),
+                name='BACKGROUND_FIT',
+                comment='Best-fit background.')
+            targeted_lines_hdu = self._make_image_hdu(
+                data=line, header=None, name='TARGETED_LINES')
             target_mask_hdu = self._make_image_hdu(
                 data=target_masks, header=None, name='TARGET_MASKS',
                 comment='Mask(s) used to isolate background when calculating '
                         'background fit.')
             background_mask_hdu = self._make_image_hdu(
-                data=background_masks, header=None,
-                name='BACKGROUND_MASKS',
+                data=background_masks, header=None, name='BACKGROUND_MASKS',
                 comment='Mask(s) used to isolate target when calculating '
                         'emission brightness.')
             aperture_edges_hdu = self._make_image_hdu(
-                data=aperture_edges, header=None,
-                name='APERTURE_EDGES')
-            background_fit_hdu = self._make_image_hdu(
-                data=background, header=data_header.copy(),
-                name='BACKGROUND_FIT')
-            background_fit_unc_hdu = self._make_image_hdu(
-                data=background_unc, header=data_header.copy(),
-                name='BACKGROUND_FIT_UNC')
-            calibrated_hdu = self._make_image_hdu(
-                data=calibrated_data, header=data_header.copy(),
-                name='CALIBRATED')
-            calibrated_unc_hdu = self._make_image_hdu(
-                data=calibrated_unc, header=data_header.copy(),
-                name='CALIBRATED_UNC')
-            wavelength_centers_hdu = self._make_image_hdu(
-                data=wavelength_centers, header=None,
-                name='WAVELENGTH_CENTERS',
+                data=aperture_edges, header=None, name='APERTURE_EDGES',
+                comment='Pixel coordinates of edges of target aperture.')
+            rest_wavelength_centers_hdu = self._make_image_hdu(
+                data=wavelength_centers_rest, header=None,
+                name='WAVELENGTH_CENTERS_REST',
+                comment='Rest frame (Earth) wavelengths.')
+            rest_wavelength_edges_hdu = self._make_image_hdu(
+                data=wavelength_edges_rest, header=None,
+                name='WAVELENGTH_EDGES_REST',
+                comment='Rest frame (Earth) wavelengths.')
+            shifted_wavelength_centers_hdu = self._make_image_hdu(
+                data=wavelength_centers_shifted, header=None,
+                name='WAVELENGTH_CENTERS_SHIFTED',
                 comment='Doppler-shifted wavelengths.')
-            wavelength_edges_hdu = self._make_image_hdu(
-                data=wavelength_edges, header=None,
-                name='WAVELENGTH_EDGES',
+            shifted_wavelength_edges_hdu = self._make_image_hdu(
+                data=wavelength_edges_shifted, header=None,
+                name='WAVELENGTH_EDGES_SHIFTED',
                 comment='Doppler-shifted wavelengths.')
-
-            hdus = [primary_hdu, targeted_lines_hdu,
-                    raw_hdu, raw_unc_hdu,
-                    target_mask_hdu, background_mask_hdu, aperture_edges_hdu,
-                    background_fit_hdu, background_fit_unc_hdu,
-                    calibrated_hdu, calibrated_unc_hdu,
-                    wavelength_centers_hdu, wavelength_edges_hdu]
+            hdus = [primary_hdu,
+                    primary_background_hdu,
+                    targeted_lines_hdu,
+                    target_mask_hdu,
+                    background_mask_hdu,
+                    aperture_edges_hdu,
+                    rest_wavelength_centers_hdu,
+                    rest_wavelength_edges_hdu,
+                    shifted_wavelength_centers_hdu,
+                    shifted_wavelength_edges_hdu,
+                    ]
             hdul = fits.HDUList(hdus)
             output_directory = Path(save_directory, line_name)
             make_directory(output_directory)
@@ -891,14 +723,21 @@ class _LineData:
         select, select_edges = self._get_data_slice(order, line_wavelengths)
         spatial_scale = self._data.science[0].data_header['SPASCALE']
         spectral_scale = self._data.science[0].data_header['SPESCALE']
+        slit_width_bins = self._data.science[0].data_header['SLITWIDB']
         calibration = _FluxCalibration(
             reduced_data_directory=self._reduced_data_directory,
             wavelengths=line_wavelengths, order=order, trim_top=self._trim_top,
             trim_bottom=self._trim_bottom)
-        wavelength_selection = (
+        rest_wavelength_selection = (
+            self._data.science[0].rest_wavelength_centers[order]
+            [select[1]])
+        rest_wavelength_edge_selection = (
+            self._data.science[0].rest_wavelength_edges[order]
+            [select_edges[1]])
+        shifted_wavelength_selection = (
             self._data.science[0].doppler_shifted_wavelength_centers[order]
             [select[1]])
-        wavelength_edge_selection = (
+        shifted_wavelength_edge_selection = (
             self._data.science[0].doppler_shifted_wavelength_edges[order]
             [select_edges[1]])
         n_traces = len(self._data.trace)
@@ -906,7 +745,7 @@ class _LineData:
         if n_traces != n_science:
             _log(self._log,
                  f"      Warning! The number of trace images ({n_traces}) "
-                 f"doesn't match the number of science images ({n_science})." 
+                 f"doesn't match the number of science images ({n_science}). " 
                  f"The pipeline will only use the first trace image.")
             use_trace = self._data.trace[0]
             traces = []
@@ -917,10 +756,10 @@ class _LineData:
         for data, trace in zip(self._data.science, traces):
             geometry = Geometry(target=data.data_header['TARGET'],
                                 observation_time=data.data_header['DATE-OBS'])
-            data_selection = data.data[order][select]
-            unc_selection = data.uncertainty[order][select]
-            trace_data_selection = trace.data[order][select]
-            trace_unc_selection = trace.uncertainty[order][select]
+            data_selection = deepcopy(data.data[order][select])
+            unc_selection = deepcopy(data.uncertainty[order][select])
+            trace_data_selection = deepcopy(trace.data[order][select])
+            trace_unc_selection = deepcopy(trace.uncertainty[order][select])
             try:
                 trace_fit, trace_fit_unc = _fit_trace(
                     trace_data_selection, trace_unc_selection)
@@ -929,7 +768,7 @@ class _LineData:
                 trace_fit = 'error'
                 trace_fit_unc = 'error'
             horizontal_positions = self._get_line_indices(
-                wavelengths=wavelength_selection,
+                wavelengths=shifted_wavelength_selection,
                 line_wavelengths=line_wavelengths)
             if isinstance(self._horizontal_offset, dict):
                 if line_name in self._horizontal_offset.keys():
@@ -945,74 +784,94 @@ class _LineData:
                          spectral_scale=spectral_scale,
                          aperture_radius=self._aperture_radius,
                          satellite_radius=data.angular_radius)
-            background = _Background(
-                data=data_selection,
-                uncertainty=unc_selection,
-                wavelengths=wavelength_selection,
-                mask=mask.target_mask,
+            calibrated_data, calibrated_unc = calibration.calibrate(
+                data_selection, unc_selection,
+                target_size=mask.satellite_size)
+
+            # integrate 2D spectra
+            dwavelength = np.repeat(
+                np.gradient(shifted_wavelength_selection)[None, :],
+                calibrated_data.shape[0], axis=0)
+            imaging_data = calibrated_data * dwavelength
+            imaging_data_unc = calibrated_unc * dwavelength
+
+            # calculate background
+            if line_name in self._background_residual:
+                fit_residual = True
+            else:
+                fit_residual = False
+            calibrated_background = _Background(
+                data=imaging_data,
+                uncertainty=imaging_data_unc,
+                rest_wavelengths=rest_wavelength_selection,
+                slit_width_bins=slit_width_bins,
+                mask=mask,
                 radius=mask.aperture_radius.value,
                 spectral_scale=spectral_scale,
                 spatial_scale=spatial_scale,
-                smoothed=self._smooth_background)
-            calibrated_data, calibrated_unc = calibration.calibrate(
-                background.data, background.uncertainty,
-                target_size=mask.satellite_size)
-            dwavelength = np.repeat(
-                np.gradient(wavelength_selection)[None, :],
-                data_selection.shape[0], axis=0)
-            calibrated_data = calibrated_data * dwavelength
-            calibrated_unc = calibrated_unc * dwavelength
+                fit_residual=fit_residual)
+
+            # calculate integrated brightness
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', category=RuntimeWarning)
                 brightness = np.nansum(
-                    calibrated_data.value * mask.background_mask
-                ) * calibrated_data.unit
-                qty = (calibrated_unc * mask.background_mask)**2
-                brightness_unc = np.sqrt(np.nansum(qty))
-                n = np.count_nonzero(np.isnan(mask.target_mask))
-                brightness_std = (np.nanstd(calibrated_data * mask.target_mask)
-                                  * np.sqrt(n))
+                    calibrated_background.data.value * mask.background_mask
+                ) * imaging_data.unit
+                brightness_unc = np.nanstd(
+                    calibrated_background.data.value * mask.target_mask)
+                brightness_unc = brightness_unc * imaging_data.unit
+                brightness_unc *= np.sqrt(mask.aperture_size_pix)
 
             # calibrate data to "per pixel" assuming emission from disk the
             # size of the target satellite
-            calibrated_data *= mask.satellite_size / mask.pixel_size
-            calibrated_unc *= mask.satellite_size / mask.pixel_size
+            scale = mask.satellite_size / mask.pixel_size
+            imaging_data *= scale
+            imaging_data_unc *= scale
 
+            # calculate background
+            imaging_background = _Background(
+                data=imaging_data,
+                uncertainty=imaging_data_unc,
+                rest_wavelengths=rest_wavelength_selection,
+                slit_width_bins=slit_width_bins,
+                mask=mask,
+                radius=mask.aperture_radius.value,
+                spectral_scale=spectral_scale,
+                spatial_scale=spatial_scale,
+                fit_residual=fit_residual)
+
+            # save FITS file
             file_path = self.save_individual_fits(
                 line=line_wavelengths,
                 line_name=line_name,
                 data_header=data.data_header,
-                trace_header=trace.data_header,
-                raw_data=data_selection,
-                raw_unc=unc_selection,
-                trace_data=trace_data_selection,
-                trace_unc=trace_unc_selection,
                 trace_fit=trace_fit,
                 trace_fit_unc=trace_fit_unc,
-                linex=horizontal_positions,
                 geometry=geometry,
                 angular_radius=mask.satellite_radius,
                 relative_velocity=data.relative_velocity,
-                background=background.best_fit,
-                background_unc=background.best_fit_uncertainty,
                 target_masks=mask.target_masks,
                 background_masks=mask.background_masks,
                 aperture_edges=mask.edges,
-                calibrated_data=calibrated_data,
-                calibrated_unc=calibrated_unc,
-                wavelength_centers=wavelength_selection,
-                wavelength_edges=wavelength_edge_selection,
-                brightness=np.round(brightness, 4),
-                brightness_unc=np.round(brightness_unc, 4),
-                brightness_std=np.round(brightness_std, 4),
+                image_data=imaging_data,
+                image_data_unc=imaging_data_unc,
+                image_background=imaging_background.best_fit,
+                wavelength_centers_rest=rest_wavelength_selection,
+                wavelength_edges_rest=rest_wavelength_edge_selection,
+                wavelength_centers_shifted=shifted_wavelength_selection,
+                wavelength_edges_shifted=shifted_wavelength_edge_selection,
+                brightness=brightness,
+                brightness_unc=brightness_unc,
                 save_directory=self._save_directory,
                 file_name=data.filename)
 
+            # make quicklook product
             make_quicklook(file_path=file_path)
 
     # noinspection DuplicatedCode
     def run_average(self, line_wavelengths: u.Quantity, line_name: str,
-                    exclude: [int], trace_offset: int or float = 0.0):
+                    exclude: [int],
+                    trace_offset: int or float = 0.0):
         """
         Process average of all individual observations for a set of lines
         (singlet or multiplet).
@@ -1038,6 +897,7 @@ class _LineData:
         data_header = self._data.science[0].data_header
         spatial_scale = data_header['SPASCALE']
         spectral_scale = data_header['SPESCALE']
+        slit_width_bins = self._data.science[0].data_header['SLITWIDB']
         unit = self._data.science[0].data.unit
         angular_radius = self._data.science[0].angular_radius
 
@@ -1052,25 +912,31 @@ class _LineData:
             wavelengths=line_wavelengths, order=order, trim_top=self._trim_top,
             trim_bottom=self._trim_bottom)
 
-        wavelength_selection = (
+        rest_wavelength_selection = (
+            self._data.science[0].rest_wavelength_centers[order]
+            [select[1]])
+        rest_wavelength_edge_selection = (
+            self._data.science[0].rest_wavelength_edges[order]
+            [select_edges[1]])
+        shifted_wavelength_selection = (
             self._data.science[0].doppler_shifted_wavelength_centers[order]
             [select[1]])
-        wavelength_edge_selection = (
+        shifted_wavelength_edge_selection = (
             self._data.science[0].doppler_shifted_wavelength_edges[order]
             [select_edges[1]])
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
             data_selection = np.nanmean(
-                [data.data[order][select].value
+                [deepcopy(data.data[order][select].value)
                  for data in np.array(self._data.science)[use_data]],
                 axis=0) * unit
             unc_selection = np.sqrt(
-                np.nansum([data.uncertainty[order][select].value ** 2
+                np.nansum([deepcopy(data.uncertainty[order][select].value) ** 2
                            for data in np.array(self._data.science)[use_data]],
                           axis=0)) * unit / len(use_data)
         trace_fit = (data_selection.shape[0] - 1) / 2 + trace_offset
         horizontal_positions = self._get_line_indices(
-            wavelengths=wavelength_selection,
+            wavelengths=shifted_wavelength_selection,
             line_wavelengths=line_wavelengths)
         if isinstance(self._horizontal_offset, dict):
             if line_name in self._horizontal_offset.keys():
@@ -1087,58 +953,80 @@ class _LineData:
                      aperture_radius=(self._aperture_radius *
                                       self._average_aperture_scale),
                      satellite_radius=angular_radius)
-        background = _Background(
-            data=data_selection,
-            uncertainty=unc_selection,
-            wavelengths=wavelength_selection,
-            mask=mask.target_mask,
+        calibrated_data, calibrated_unc = calibration.calibrate(
+            data_selection, unc_selection,
+            target_size=mask.satellite_size)
+
+        # integrate 2D spectra
+        dwavelength = np.repeat(
+            np.gradient(shifted_wavelength_selection)[None, :],
+            calibrated_data.shape[0], axis=0)
+        imaging_data = calibrated_data * dwavelength
+        imaging_data_unc = calibrated_unc * dwavelength
+
+        # calculate background
+        if line_name in self._background_residual:
+            fit_residual = True
+        else:
+            fit_residual = False
+        calibrated_background = _Background(
+            data=imaging_data,
+            uncertainty=imaging_data_unc,
+            rest_wavelengths=rest_wavelength_selection,
+            slit_width_bins=slit_width_bins,
+            mask=mask,
             radius=mask.aperture_radius.value,
             spectral_scale=spectral_scale,
             spatial_scale=spatial_scale,
-            smoothed=self._smooth_background)
-        calibrated_data, calibrated_unc = calibration.calibrate(
-            background.data, background.uncertainty,
-            target_size=mask.satellite_size)
-        dwavelength = np.repeat(
-            np.gradient(wavelength_selection)[None, :],
-            data_selection.shape[0], axis=0)
-        calibrated_data = calibrated_data * dwavelength
-        calibrated_unc = calibrated_unc * dwavelength
+            fit_residual=fit_residual)
+
+        # calculate integrated brightness
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', category=RuntimeWarning)
-            brightness = np.nansum(calibrated_data.value * mask.background_mask
-                                   ) * calibrated_data.unit
-            qty = (calibrated_unc * mask.background_mask) ** 2
-            brightness_unc = np.sqrt(np.nansum(qty))
-            n = np.count_nonzero(~np.isnan(mask.target_mask))
-            brightness_std = (np.nanstd(calibrated_data * mask.target_mask)
-                              * np.sqrt(n))
+            brightness = np.nansum(
+                calibrated_background.data.value * mask.background_mask
+            ) * imaging_data.unit
+            brightness_unc = np.nanstd(
+                calibrated_background.data.value * mask.target_mask)
+            brightness_unc = brightness_unc * imaging_data.unit
+            brightness_unc *= np.sqrt(mask.aperture_size_pix)
 
         # calibrate data to "per pixel" assuming emission from disk the
         # size of the target satellite
-        calibrated_data *= mask.satellite_size / mask.pixel_size
-        calibrated_unc *= mask.satellite_size / mask.pixel_size
+        scale = mask.satellite_size / mask.pixel_size
+        imaging_data *= scale
+        imaging_data_unc *= scale
 
+        # calculate background
+        imaging_background = _Background(
+            data=imaging_data,
+            uncertainty=imaging_data_unc,
+            rest_wavelengths=rest_wavelength_selection,
+            slit_width_bins=slit_width_bins,
+            mask=mask,
+            radius=mask.aperture_radius.value,
+            spectral_scale=spectral_scale,
+            spatial_scale=spatial_scale,
+            fit_residual=fit_residual)
+
+        # save FITS file
         file_path = self.save_average_fits(
             line=line_wavelengths,
             line_name=line_name,
             data_header=data_header,
-            raw_data=data_selection,
-            raw_unc=unc_selection,
             tracefit=trace_fit,
-            background=background.best_fit,
-            background_unc=background.best_fit_uncertainty,
             target_masks=mask.target_masks,
             angular_radius=angular_radius,
             background_masks=mask.background_masks,
             aperture_edges=mask.edges,
-            calibrated_data=calibrated_data,
-            calibrated_unc=calibrated_unc,
-            wavelength_centers=wavelength_selection,
-            wavelength_edges=wavelength_edge_selection,
-            brightness=np.round(brightness, 4),
-            brightness_unc=np.round(brightness_unc, 4),
-            brightness_std=np.round(brightness_std, 4),
+            image_data=imaging_data,
+            image_background=imaging_background.best_fit,
+            wavelength_centers_rest=rest_wavelength_selection,
+            wavelength_edges_rest=rest_wavelength_edge_selection,
+            wavelength_centers_shifted=shifted_wavelength_selection,
+            wavelength_edges_shifted=shifted_wavelength_edge_selection,
+            brightness=brightness,
+            brightness_unc=brightness_unc,
             save_directory=self._save_directory)
 
         make_quicklook(file_path=file_path)
@@ -1155,7 +1043,7 @@ def calibrate_data(log: list,
                    average_trace_offset: int or float = 0.0,
                    individual_trace_offset: int or float = 0.0,
                    skip: [str] = None,
-                   smooth_background: bool = True):
+                   fit_background_residual: [str] = None):
     """
     This function runs the aurora data calibration pipeline for all wavelengths
     (default O and H or extended Io set).
@@ -1190,15 +1078,16 @@ def calibrate_data(log: list,
     individual_trace_offset : int or float
         Additional systematic vertical offset for individual traces.
     skip : [str]
-        Lines to skip when averaging. Example: `skip=['[O I] 557.7 nm']`.
+        Lines to skip when averaging. Example: `skip=['557.7 nm [O I] ']`.
         Default is None.
-    smooth_background : bool
-        Whether or not to apply a Gaussian kernel to smooth the fitted
-        background. Sometimes the subtraction can be much worse (especially
-        around atmospheric lines), so you could turn this off if it is.
+    fit_background_residual : bool
+        Lines for which you want to fit extra residual. `656.3 nm H I` is on by
+        default.
     """
     if skip is None:
         skip = []
+    if fit_background_residual is None:
+        fit_background_residual = ['656.3 nm H I']
     aurora_lines = AuroraLines(extended=extended)
     line_data = _LineData(log=log,
                           reduced_data_directory=reduced_data_directory,
@@ -1207,23 +1096,24 @@ def calibrate_data(log: list,
                           trim_bottom=trim_bottom,
                           aperture_radius=aperture_radius,
                           average_aperture_scale=average_aperture_scale,
-                          smooth_background=smooth_background)
+                          background_residual=fit_background_residual)
 
     lines = aurora_lines.wavelengths
     line_names = aurora_lines.names
+
     for line_wavelengths, line_name in zip(lines, line_names):
         if line_name in skip:
             _log(log, f'   Skipping {line_name}...')
             continue
         _log(log, f'   Calibrating {line_name} data...')
         try:
-            line_data.run_individual(line_wavelengths=line_wavelengths,
-                                     line_name=line_name,
-                                     trace_offset=individual_trace_offset)
             line_data.run_average(line_wavelengths=line_wavelengths,
                                   line_name=line_name,
                                   exclude=exclude,
                                   trace_offset=average_trace_offset)
+            line_data.run_individual(line_wavelengths=line_wavelengths,
+                                     line_name=line_name,
+                                     trace_offset=individual_trace_offset)
         except WavelengthNotFoundError:
             _log(log, f'      {line_name} not captured by HIRES setup! '
                       f'Skipping...')

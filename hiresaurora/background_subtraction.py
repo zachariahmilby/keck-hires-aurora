@@ -2,10 +2,12 @@ import warnings
 
 import astropy.units as u
 import numpy as np
-from astropy.convolution import convolve, Gaussian1DKernel, \
-    interpolate_replace_nans
+from astropy.convolution import convolve, Gaussian1DKernel
 from lmfit.model import Parameters
-from lmfit.models import Model, PolynomialModel
+from lmfit.models import Model, RectangleModel, PolynomialModel, ConstantModel
+
+from hiresaurora.general import known_emission_lines
+from hiresaurora.masking import _Mask
 
 
 class BackgroundFitError(Exception):
@@ -21,9 +23,9 @@ class _Background:
     """
 
     def __init__(self, data: u.Quantity, uncertainty: u.Quantity,
-                 wavelengths: u.Quantity,
-                 mask: np.ndarray, radius: float, spatial_scale: float,
-                 spectral_scale: float, smoothed: bool = True):
+                 rest_wavelengths: u.Quantity, slit_width_bins: float,
+                 mask: _Mask, radius: float, spatial_scale: float,
+                 spectral_scale: float, fit_residual: bool = False):
         """
         Parameters
         ----------
@@ -42,62 +44,104 @@ class _Background:
         """
         self._data = data.value
         self._uncertainty = uncertainty.value
-        self._wavelengths = wavelengths.to(u.nm).value
+        self._rest_wavelengths = rest_wavelengths
+        self._slit_width_bins = slit_width_bins
         self._unit = data.unit
         self._mask = mask
         self._radius = radius
         self._spatial_scale = spatial_scale
         self._spectral_scale = spectral_scale
-        self._smoothed = smoothed
+        self._fit_residual = fit_residual
         self._nspa, self._nspe = self._data.shape
         self._background = np.zeros(self._data.shape)
         self._background_unc = np.zeros(self._data.shape)
         self._fit_background()
 
     def _fit_background(self):
-        self._fit_row_background(minval=0)
-        self._fit_row_background(minval=None)
+        self._fit_row_background(degree=5)
+        if self._fit_residual:
+            self._fit_row_background(degree=1)
 
-    def _get_row_profile(self, data: np.ndarray, width=1,
-                         rows=None) -> np.ndarray:
+    def _get_profile(self):
+        smoothed_data = (self._data -
+                         self._background).copy() * self._mask.target_mask
+        kernel = Gaussian1DKernel(stddev=4)
+        for col in range(smoothed_data.shape[1]):
+            smoothed_data[:, col] = convolve(
+                smoothed_data[:, col], kernel, boundary='extend')
+        return np.mean(smoothed_data, axis=0)
+
+    def _get_skyline(self) -> np.ndarray:
+        """
+        Fit a known Earth sky emission line.
+        """
+        profile = self._get_profile()
+        sky_line = np.zeros_like(profile)
+        for wavelength in known_emission_lines:
+            ind = np.abs(self._rest_wavelengths - wavelength).argmin()
+            halfwidth = int(self._slit_width_bins / 2)
+            if (ind != 0) & (ind != self._rest_wavelengths.size - 1):
+                s_ = np.s_[ind-halfwidth-10:ind+halfwidth+10]
+                x = np.arange(profile.size)
+                model = RectangleModel(form='logistic') + ConstantModel()
+                params = Parameters()
+                params.add('c', value=0)
+                params.add(
+                    'amplitude', value=np.nanmax(profile), min=0)
+                params.add('width', value=self._slit_width_bins,
+                           min=self._slit_width_bins * 0.9,
+                           max=self._slit_width_bins * 1.1)
+                params.add('center', value=ind)
+                params.add('center1', expr='center-width/2')
+                params.add('center2', expr='center+width/2')
+                params.add('sigma1', value=0.85, min=0.7, max=1)
+                params.add('sigma2', expr='sigma1')
+                fit = model.fit(profile[s_], params, x=x[s_])
+                sky_line = fit.eval_components(x=x)['rectangle']
+        return sky_line
+
+    def _get_characteristic_background(self) -> np.ndarray:
         """
         Create a characteristic normalized row profile over all rows
         without any NaNs.
         """
-        if rows is None:
-            s_ = np.s_[:]
-        else:
-            s_ = np.s_[rows]
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
-            ind = np.where(~np.isnan(np.sum(data[s_], axis=1)))[0]
-            profile = np.nanmean(data[ind], axis=0)
-            if self._smoothed:
-                kernel = Gaussian1DKernel(stddev=width)
-                profile = convolve(profile, kernel, boundary='extend')
-                if len(np.where(np.isnan(profile))) != 0:
-                    sigma = np.where(~np.isnan(np.sum(data, axis=0)))[0].size/2
-                    new_kernel = Gaussian1DKernel(stddev=sigma)
-                    profile = interpolate_replace_nans(profile, new_kernel)
-            return profile / np.nanmax(profile)
+            profile = self._get_profile()
+            sky_line = self._get_skyline()
+            profile -= sky_line
+            kernel = Gaussian1DKernel(stddev=2)
+            profile = convolve(profile, kernel, boundary='extend')
+            return profile
+
+    def _construct_fitting_profile(self) -> np.ndarray:
+        sky_line = self._get_skyline()
+        background = self._get_characteristic_background()
+        profile = background + sky_line
+        return profile / np.nanmax(profile)
 
     @staticmethod
-    def _fitting_model(profile, coefficient):
+    def _fitting_func(profile, coefficient):
         """
         Function to fit a profile to data.
         """
         return coefficient * profile
 
-    def _fit_row_background(self, rows=None, minval=None):
-        background = np.zeros((self._nspa, self._nspe))
-        background_uncertainty = np.zeros((self._nspa, self._nspe))
-        masked_data = (self._data - self._background) * self._mask
-        uncertainty = np.sqrt(self._uncertainty ** 2
-                              + self._background_unc ** 2)
-        model = Model(self._fitting_model,
+    def _fitting_model(self):
+        model = Model(self._fitting_func,
                       independent_vars=['profile'],
                       nan_policy='omit')
-        profile = self._get_row_profile(masked_data, rows=rows)
+        return model
+
+    def _fit_row_background(self, degree: int = 5):
+        background = np.zeros((self._nspa, self._nspe))
+        background_uncertainty = np.zeros((self._nspa, self._nspe))
+        masked_data = (self._data - self._background) * self._mask.target_mask
+        uncertainty = np.sqrt(self._uncertainty ** 2
+                              + self._background_unc ** 2)
+        coefficients = np.zeros(self._nspa)
+        profile = self._construct_fitting_profile()
+        model = self._fitting_model()
         for i in range(self._nspa):
             try:
                 s_ = np.s_[i]
@@ -110,24 +154,25 @@ class _Background:
                     good = np.where(~np.isnan(data))[0]
                     if len(good) > 0:
                         params = Parameters()
-                        if minval is not None:
-                            params.add('coefficient', value=np.nanmax(data),
-                                       min=minval)
-                        else:
-                            params.add('coefficient', value=np.nanmax(data))
+                        params.add('coefficient', value=np.nanmax(data))
                         fit = model.fit(data[good], params=params,
                                         weights=weights[good],
                                         profile=profile[good])
-                        with warnings.catch_warnings():
-                            warnings.simplefilter(
-                                'ignore', category=RuntimeWarning)
-                            background[s_] = fit.eval(profile=profile)
-                            background_uncertainty[s_] = fit.eval_uncertainty(
-                                profile=profile)
+                        coefficients[i] = fit.params['coefficient'].value
                 except (ValueError, TypeError):
                     raise BackgroundFitError()
             except BackgroundFitError:
                 continue
+        model = PolynomialModel(degree=degree)
+        x = np.arange(coefficients.size)
+        s_ = np.s_[1:-1]  # ignore order edges when fitting
+        params = model.guess(coefficients[s_], x=x[s_])
+        fit = model.fit(coefficients[s_], params, x=x[s_])
+        coefficient_fit = fit.eval(x=x)
+        coefficient_fit_unc = fit.eval_uncertainty(params, x=x)
+        for i in range(coefficients.size):
+            background[i] = profile * coefficient_fit[i]
+            background_uncertainty[i] = profile * coefficient_fit_unc[i]
         self._background += background
         self._background_unc = np.sqrt(self._background_unc**2
                                        + background_uncertainty**2)
