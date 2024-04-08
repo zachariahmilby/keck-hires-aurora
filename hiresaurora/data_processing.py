@@ -12,8 +12,7 @@ from lmfit.models import PolynomialModel, GaussianModel, ConstantModel
 from hiresaurora.background_subtraction import _Background
 from hiresaurora.calibration import _FluxCalibration
 from hiresaurora.ephemeris import _get_ephemeris
-from hiresaurora.general import _doppler_shift_wavelengths, AuroraLines, \
-    FuzzyQuantity, _log
+from hiresaurora.general import _doppler_shift_wavelengths, AuroraLines, _log
 from hiresaurora.graphics import make_quicklook
 from hiresaurora.observing_geometry import Geometry
 from hiresaurora.masking import _Mask
@@ -448,15 +447,12 @@ class _LineData:
         primary_hdu.header['BUNIT'] = f'{unit}'
         primary_hdu.header.set('LINE', f'{line_name}',
                                'targeted emission line')
-        qty = FuzzyQuantity(value=brightness, uncertainty=brightness_unc)
-        primary_hdu.header.set('BRGHT', float(qty.value_formatted),
-                               f'best-fit brightness [{qty.unit}]')
-        primary_hdu.header.set('BRGHTUNC', float(qty.uncertainty_formatted),
-                               f'best-fit brightness [{qty.unit}]')
+        primary_hdu.header.set('BRGHT', brightness.value,
+                               f'best-fit brightness [{brightness.unit}]')
+        primary_hdu.header.set('BRGHTUNC', brightness_unc.value,
+                               f'best-fit brightness [{brightness.unit}]')
         if (trace is not None) and (trace != 'error'):
             if (trace_unc is not None) and (trace != 'error'):
-                fuzz = FuzzyQuantity(trace, trace_unc)
-                trace, trace_unc = fuzz.value, fuzz.uncertainty
                 primary_hdu.header.set('TRACEFIT', trace,
                                        'trace fit fractional pixel location')
                 primary_hdu.header.set(
@@ -819,6 +815,9 @@ class _LineData:
                 ) * imaging_data.unit
                 brightness_unc = np.nanstd(
                     calibrated_background.data.value * mask.target_mask)
+                # brightness_unc = np.sqrt(
+                #     np.nansum(calibrated_background.uncertainty.value *
+                #               mask.background_mask))
                 brightness_unc = brightness_unc * imaging_data.unit
                 brightness_unc *= np.sqrt(mask.aperture_size_pix)
 
@@ -988,6 +987,9 @@ class _LineData:
             ) * imaging_data.unit
             brightness_unc = np.nanstd(
                 calibrated_background.data.value * mask.target_mask)
+            # brightness_unc = np.sqrt(
+            #     np.nansum(calibrated_background.uncertainty.value *
+            #               mask.background_mask))
             brightness_unc = brightness_unc * imaging_data.unit
             brightness_unc *= np.sqrt(mask.aperture_size_pix)
 
