@@ -1013,8 +1013,10 @@ class _LineData:
                 spatial_scale=spatial_scale,
                 allow_doppler_shift=self._doppler_shift_background)
 
-            individual_data_2d.append(calibrated_background.data_2d)
-            individual_unc_2d.append(calibrated_background.uncertainty_2d)
+            individual_data_2d.append(calibrated_background.data_2d -
+                                      calibrated_background.sky_line_fit)
+            individual_unc_2d.append(calibrated_background.uncertainty_2d -
+                                     calibrated_background.sky_line_fit)
             if trace_fit != 'error':
                 individual_traces.append(trace_fit)
             else:
@@ -1156,11 +1158,11 @@ class _LineData:
                                 calibrated_data_1d,
                                 angular_width=angular_width,
                                 sigma=sigma)
+        if fit_1d is None:
+            return
         brightness, brightness_unc = (
             self._calcualte_brightness_from_1d_fit(
                 fit_1d, shifted_wavelength_selection))
-        if fit_1d is None:
-            return
         sigmas.append(fit_1d.params['peak0_sigma'].value)
 
         # integrate 2D spectra

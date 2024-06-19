@@ -2,17 +2,14 @@ import warnings
 
 import astropy.units as u
 import numpy as np
-from astropy.convolution import convolve, CustomKernel
+from astropy.convolution import convolve
 from lmfit.model import ModelResult
 from lmfit.models import Model, RectangleModel, PolynomialModel
 from lmfit.parameter import Parameters
-from scipy.stats import binned_statistic
 
 from hiresaurora.general import (known_emission_lines,
                                  _doppler_shift_wavelengths, _slit_kernel)
-from hiresaurora.calibration import _get_solar_spectral_brightness
 from hiresaurora.masking import _Mask
-
 
 warnings.simplefilter('ignore', category=RuntimeWarning)
 
@@ -241,11 +238,11 @@ class _Background:
                     except RuntimeWarning:
                         continue
         median_background -= sky_line
-        # smoothed_background = convolve(
-        #     median_background, _slit_kernel(self._slit_width_bins),
-        #     boundary='extend')
-        normalized_background = (median_background /
-                                 np.nanmax(median_background))
+        smoothed_background = convolve(
+            median_background, _slit_kernel(self._slit_width_bins),
+            boundary='extend')
+        normalized_background = (smoothed_background /
+                                 np.nanmax(smoothed_background))
         return normalized_background
 
     @staticmethod
@@ -359,7 +356,7 @@ class _Background:
                 params = model.make_params(
                     coeff=np.nanmean(data), const=0.0)
                 shifted_profile = self._doppler_shift_background(
-                    self._profile, self._rest_wavelengths, velocities[i])
+                    self._profile, self._rest_wavelengths, velocities[i])  # noqa
                 good = np.where(~np.isnan(data) & ~np.isnan(weights) &
                                 ~np.isnan(shifted_profile))[0]
                 if len(good) > 0:

@@ -321,6 +321,20 @@ class FuzzyQuantity:
                 or np.isnan(float(self._formatted_unc))):
             value = 'nan'
             unc = 'nan'
+        elif (self._scale == 10000) and self._precision >= 4:
+            fmt = self._precision - 4
+            value = f'{float(self._formatted_value):.{fmt}f}'
+            unc = f'{float(self._formatted_unc):.{fmt}f}'
+        elif (self._scale == 10000) and self._precision < 4:
+            value = f'{float(self._formatted_value):.0f}'
+            unc = f'{float(self._formatted_unc):.0f}'
+        elif (self._scale == 1000) and self._precision >= 3:
+            fmt = self._precision - 3
+            value = f'{float(self._formatted_value):.{fmt}f}'
+            unc = f'{float(self._formatted_unc):.{fmt}f}'
+        elif (self._scale == 1000) and self._precision < 3:
+            value = f'{float(self._formatted_value):.0f}'
+            unc = f'{float(self._formatted_unc):.0f}'
         elif (self._scale == 100) and self._precision >= 2:
             fmt = self._precision - 2
             value = f'{float(self._formatted_value):.{fmt}f}'
