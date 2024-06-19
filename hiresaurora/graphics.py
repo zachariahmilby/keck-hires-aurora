@@ -26,7 +26,7 @@ def contour_rect_slow(im):
     can-matplotlib-contours-match-pixel-edges
     """
 
-    pad = np.pad(im, [(1, 1), (1, 1)])
+    pad = np.pad(im, [(1, 1), (1, 1)])  # noqa
     im0 = np.abs(np.diff(pad, n=1, axis=0))[:, 1:]
     im1 = np.abs(np.diff(pad, n=1, axis=1))[1:, :]
     lines = []
@@ -42,7 +42,7 @@ def _place_colorbar(img: plt.cm.ScalarMappable, axis: plt.Axes):
     """
     Place a colorbar and label it with units.
     """
-    plt.colorbar(img, ax=axis, label='Brightness [R]', pad=0.0125, aspect=15)
+    plt.colorbar(img, ax=axis, label='R', pad=0.0125, aspect=10)
 
 
 def _place_label(label: str, axis: plt.Axes):
@@ -64,26 +64,49 @@ def make_quicklook(file_path: Path):
     savename = Path(str(file_path).replace('.fits.gz', '.jpg'))
 
     with fits.open(file_path) as hdul:
-        header = hdul['PRIMARY'].header
         data = hdul['PRIMARY'].data
-        background = hdul['BACKGROUND_FIT'].data
+        background = hdul['BACKGROUND_FIT'].data + hdul['SKYLINE_FIT'].data
         bgsub_data = data - background
         edges = hdul['APERTURE_EDGES'].data
+        spascale = hdul['PRIMARY'].header['SPASCALE']
+        spescale = hdul['PRIMARY'].header['SPESCALE']
+        brightness = hdul['PRIMARY'].header['BRGHT']
+        uncertainty = hdul['PRIMARY'].header['BRGHTUNC']
+        fuzz = FuzzyQuantity(brightness, uncertainty)
 
         cmap = plt.get_cmap('viridis')
         dunit = 0.06
-        aspect_ratio = header['SPASCALE'] / header['SPESCALE']
+        aspect_ratio = spascale / spescale
         n_spa, n_spe = data.shape
         height = dunit * n_spa * 3
         width = dunit * n_spe / aspect_ratio
         height += 6 * dunit
         width += 2 * dunit
-        fig, axes = plt.subplots(3, figsize=(width, height),
-                                 layout='constrained', clear=True)
-        [axis.xaxis.set_major_locator(ticker.NullLocator()) for axis in axes]
-        [axis.xaxis.set_minor_locator(ticker.NullLocator()) for axis in axes]
-        [axis.yaxis.set_major_locator(ticker.NullLocator()) for axis in axes]
-        [axis.yaxis.set_minor_locator(ticker.NullLocator()) for axis in axes]
+        height *= 1.6
+
+        fig, axes = plt.subplots(4, figsize=(width*0.8, height*0.8),
+                                 gridspec_kw={'height_ratios': [1, 1, 1, 2]},
+                                 sharex='all', layout='constrained',
+                                 clear=True)
+        [axis.xaxis.set_major_locator(ticker.NullLocator())
+         for axis in axes]
+        [axis.xaxis.set_minor_locator(ticker.NullLocator())
+         for axis in axes]
+        [axis.yaxis.set_major_locator(ticker.NullLocator())
+         for axis in axes[:-1]]
+        [axis.yaxis.set_minor_locator(ticker.NullLocator())
+         for axis in axes[:-1]]
+
+        x = np.arange(data.shape[1]) * spescale
+        pixel2wavelength = np.poly1d(np.polyfit(
+            x, hdul['WAVELENGTH_CENTERS_SHIFTED'].data, deg=3))
+        wavelength2pixel = np.poly1d(np.polyfit(
+            hdul['WAVELENGTH_CENTERS_SHIFTED'].data, x, deg=3))
+        wavelength_axis = axes[-1].secondary_xaxis(
+            'bottom', functions=(pixel2wavelength, wavelength2pixel))
+        wavelength_axis.xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+        wavelength_axis.xaxis.set_minor_locator(ticker.MultipleLocator(0.02))
+        wavelength_axis.set_xlabel('Doppler-Shifted Wavelength [nm]')
 
         emission_lines = hdul['TARGETED_LINES'].data
         if len(emission_lines) > 1:
@@ -95,8 +118,7 @@ def make_quicklook(file_path: Path):
             warnings.simplefilter('ignore', category=RuntimeWarning)
             norm = colors.Normalize(vmin=np.nanpercentile(data, 1),
                                     vmax=np.nanpercentile(data, 99.9))
-        spascale = hdul['PRIMARY'].header['SPASCALE']
-        spescale = hdul['PRIMARY'].header['SPESCALE']
+
         x, y = np.meshgrid(np.arange(data.shape[1]) * spescale,
                            np.arange(data.shape[0]) * spascale)
         img0 = axes[0].pcolormesh(x, y, data, norm=norm, cmap=cmap)
@@ -119,6 +141,21 @@ def make_quicklook(file_path: Path):
             axes[2].plot(np.array(line[1]) * spescale,
                          np.array(line[0]) * spascale,
                          color='red')
+
+        axes[3].plot(np.arange(data.shape[1]) * spescale,
+                     hdul['SPECTRUM_1D'].data, color='grey', zorder=2)
+        axes[3].plot(np.arange(data.shape[1]) * spescale,
+                     hdul['BEST_FIT_1D'].data, color='red', zorder=4)
+        axes[3].fill_between(
+            np.arange(data.shape[1]) * spescale,
+            hdul['BEST_FIT_1D'].data - hdul['BEST_FIT_1D_unc'].data,
+            hdul['BEST_FIT_1D'].data + hdul['BEST_FIT_1D_unc'].data,
+            color='red', alpha=0.25, zorder=3)
+        label = fr'Best-fit brightness: ${fuzz.latex}$ R'
+        axes[3].annotate(label, xy=(0, 1), xytext=(3, -3),
+                         xycoords='axes fraction', textcoords='offset points',
+                         ha='left', va='top')
+        axes[3].set_ylabel(r'R nm$^{-1}$')
 
         plt.savefig(savename)
         plt.close(fig)

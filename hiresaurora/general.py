@@ -1,5 +1,8 @@
 import re
 from pathlib import Path
+from astropy.convolution import CustomKernel
+from lmfit.models import RectangleModel
+from lmfit.parameter import Parameters
 
 import astropy.constants as c
 import astropy.units as u
@@ -23,15 +26,22 @@ naif_codes = {'Jupiter': '599', 'Io': '501', 'Europa': '502',
 known_emission_lines = [557.7339, 630.0304, 636.3776] * u.nm
 
 
-def _log(log, string, silent: bool = False):
-    log.append(string)
+def _make_log(path: Path):
+    if not path.exists():
+        path.mkdir(parents=True)
+    with open(Path(path, 'log.txt'), 'w') as _:
+        pass
+
+
+def _write_log(path: Path, string: str):
+    with open(Path(path, 'log.txt'), 'a') as file:
+        file.write(string + '\n')
+
+
+def _log(path, string, silent: bool = False):
+    _write_log(path, string)
     if not silent:
         print(string)
-
-
-def _write_log(path: Path, log: list):
-    with open(Path(path), 'w') as file:
-        file.write('\n'.join(log))
 
 
 # noinspection PyUnresolvedReferences
@@ -40,6 +50,20 @@ def _doppler_shift_wavelengths(wavelengths: u.Quantity, velocity):
     Apply Doppler shift to wavelengths.
     """
     return (wavelengths * (1 - velocity.si / c.c)).si.to(u.nm)
+
+
+def _slit_kernel(slit_width_bins) -> CustomKernel:
+    model = RectangleModel(form='logistic')
+    params = Parameters()
+    params.add('amplitude', value=1)
+    params.add('width', value=slit_width_bins - 2 * 0.6)
+    params.add('center', value=0.0)
+    params.add('center1', expr='center-width/2')
+    params.add('center2', expr='center+width/2')
+    params.add('sigma1', value=0.6)
+    params.add('sigma2', value=0.6)
+    x = np.arange(-slit_width_bins*2, slit_width_bins*2+1, 1)
+    return CustomKernel(model.eval(params, x=x))
 
 
 class _EmissionLine:
@@ -74,19 +98,18 @@ class _EmissionLine:
 
 
 _emission_lines = {
+    '342.7 nm [Na I]': _EmissionLine(wavelengths=[342.6858] * u.nm,
+                                     species='[Na I]'),
+    '364.9 nm [K I]': _EmissionLine(wavelengths=[364.8985] * u.nm,
+                                    species='[K I]'),
     '372.6 nm [O II]': _EmissionLine(wavelengths=[372.6032] * u.nm,
                                      species='[O II]'),
     '372.9 nm [O II]': _EmissionLine(wavelengths=[372.8815] * u.nm,
                                      species='[O II]'),
-    '364.9 nm [K I]': _EmissionLine(wavelengths=[364.8985] * u.nm,
-                                    species='[K I]'),
-    '342.7 nm [Na I]': _EmissionLine(wavelengths=[342.6858] * u.nm,
-                                     species='[Na I]'),
     '388.4 nm [Na I]': _EmissionLine(wavelengths=[388.3903] * u.nm,
                                      species='[Na I]'),
-    '406.9 nm [S II]': _EmissionLine(
-        wavelengths=[406.8600, 407.6349] * u.nm,
-        species='[S II]', ratios=[1, 0.286776/0.713224]),
+    '406.9 nm [S II]': _EmissionLine(wavelengths=[406.8600] * u.nm,
+                                     species='[S II]'),
     '407.6 nm [S II]': _EmissionLine(wavelengths=[407.6349] * u.nm,
                                      species='[S II]'),
     '434.0 nm H I': _EmissionLine(wavelengths=[434.0472] * u.nm,
@@ -113,22 +136,21 @@ _emission_lines = {
                                     species='[O I]'),
     '656.3 nm H I': _EmissionLine(wavelengths=[656.2801] * u.nm,
                                   species='H I'),
-    '671.6 nm [S II]': _EmissionLine(wavelengths=[671.6338] * u.nm,
+    '671.6 nm [S II]': _EmissionLine(wavelengths=[671.6440] * u.nm,
                                      species='[S II]'),
-    '673.1 nm [S II]': _EmissionLine(wavelengths=[673.0713] * u.nm,
+    '673.1 nm [S II]': _EmissionLine(wavelengths=[673.0816] * u.nm,
                                      species='[S II]'),
-    '731.9 nm [O II]': _EmissionLine(
-        wavelengths=[731.8811, 731.9878] * u.nm,
-        species='[O II]', ratios=[1, 0.363955/0.636045]),
+    '732.0 nm [O II]': _EmissionLine(wavelengths=[731.999] * u.nm,
+                                     species='[O II]'),
     '733.0 nm [O II]': _EmissionLine(
-        wavelengths=[732.9554, 733.0624] * u.nm,
+        wavelengths=[732.967, 733.073] * u.nm,
         species='[O II]', ratios=[1, 0.667817/0.332183]),
     '751.5 nm [Na I]': _EmissionLine(
         wavelengths=[750.7464, 751.7172, 752.0333] * u.nm,
         species='[Na I]', ratios=[1, 0.453292/0.455845, 0.0908627/0.455845]),
     '766.4 nm K I': _EmissionLine(wavelengths=[766.4899] * u.nm,
                                   species='K I'),
-    '769.9 nm K I': _EmissionLine(wavelengths=[769.8965] * u.nm,
+    '769.9 nm K I': _EmissionLine(wavelengths=[769.8964] * u.nm,
                                   species='K I'),
     '772.5 nm [S I]': _EmissionLine(wavelengths=[772.5046] * u.nm,
                                     species='[S I]'),
@@ -154,7 +176,6 @@ _emission_lines = {
                                   species='S I'),
 }
 
-
 icy_satellite_lines = ['557.7 nm [O I]', '630.0 nm [O I]', '636.4 nm [O I]',
                        '656.3 nm H I', '777.4 nm O I', '844.6 nm O I']
 
@@ -173,6 +194,7 @@ class AuroraLines:
         self._extended = extended
         self._aurora_line_wavelengths = self._get_aurora_line_wavelengths()
         self._aurora_line_names = self._get_aurora_line_names()
+        self._aurora_line_ratios = self._get_aurora_line_ratios()
 
     def __str__(self):
         print_str = 'Aurora lines'
@@ -198,6 +220,15 @@ class AuroraLines:
                     for key in _emission_lines.keys()
                     if key in icy_satellite_lines]
 
+    def _get_aurora_line_ratios(self) -> [[float]]:
+        if self._extended:
+            return [_emission_lines[key].ratios
+                    for key in _emission_lines.keys()]
+        else:
+            return [_emission_lines[key].ratios
+                    for key in _emission_lines.keys()
+                    if key in icy_satellite_lines]
+
     def _get_aurora_line_names(self) -> [str]:
         """
         Get the atom name and wavelength to 1 decimal place. In astronomer
@@ -217,6 +248,10 @@ class AuroraLines:
     @property
     def names(self) -> [str]:
         return self._aurora_line_names
+
+    @property
+    def ratios(self) -> [float]:
+        return self._aurora_line_ratios
 
 
 class FuzzyQuantity:

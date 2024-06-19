@@ -8,10 +8,13 @@ class _Mask:
     """
     Class to generate aperture masks.
     """
-    def __init__(self, data: u.Quantity, trace_center: float,
+    def __init__(self,
+                 data: u.Quantity,
+                 trace_center: float,
                  horizontal_positions: [float],
-                 horizontal_offset: int or float, spatial_scale: float,
-                 spectral_scale: float, aperture_radius: u.Quantity,
+                 spatial_scale: float,
+                 spectral_scale: float,
+                 aperture_radius: u.Quantity,
                  satellite_radius: u.Quantity):
         """
         Parameters
@@ -22,8 +25,6 @@ class _Mask:
             The fractional vertical pixel position of the trace.
         horizontal_positions : [float]
             The fractional horizontal pixel position(s) of the emission lines.
-        horizontal_offset : int or float
-            Any additional offset if the wavelength solution is off.
         spatial_scale : float
             The spatial scale, probably in [arcsec/bin] since it's read from
             the reduced FITS header.
@@ -41,7 +42,6 @@ class _Mask:
             trace_center = data.shape[0] / 2
         self._trace_center = trace_center
         self._horizontal_positions = horizontal_positions
-        self._horizontal_offset = horizontal_offset
         self._spatial_scale = spatial_scale
         self._spectral_scale = spectral_scale
         self._aperture_radius = aperture_radius.to(u.arcsec)
@@ -62,7 +62,6 @@ class _Mask:
         if self._trace_center is None:
             self._trace_center = shape[0] / 2
         for horizontal_position in self._horizontal_positions:
-            horizontal_position += self._horizontal_offset
             distance = np.sqrt(
                 (x - self._spectral_scale * horizontal_position) ** 2 +
                 (y - self._spatial_scale * self._trace_center) ** 2)
@@ -118,10 +117,6 @@ class _Mask:
         return self._masks['y']
 
     @property
-    def horizontal_positions(self) -> np.ndarray:
-        return self._horizontal_positions + self._horizontal_offset
-
-    @property
     def vertical_position(self) -> float:
         return self._trace_center
 
@@ -140,6 +135,14 @@ class _Mask:
     @property
     def satellite_size(self) -> u.Quantity:
         return np.pi * self._satellite_radius ** 2
+
+    @property
+    def spectral_scale(self) -> u.Quantity:
+        return self._spectral_scale * u.arcsec
+
+    @property
+    def spatial_scale(self) -> u.Quantity:
+        return self._spatial_scale * u.arcsec
 
     @property
     def pixel_size(self) -> u.Quantity:

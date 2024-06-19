@@ -1,21 +1,23 @@
 import warnings
-from pathlib import Path
 from copy import deepcopy
+from pathlib import Path
 
 import astropy.units as u
 import numpy as np
 from astropy.io import fits
 from astropy.time import Time
 from hirespipeline.files import make_directory
+from lmfit.model import ModelResult
 from lmfit.models import PolynomialModel, GaussianModel, ConstantModel
+from scipy.ndimage import shift
 
-from hiresaurora.background_subtraction import _Background
+from hiresaurora.background_subtraction import _Background, BackgroundFitError
 from hiresaurora.calibration import _FluxCalibration
 from hiresaurora.ephemeris import _get_ephemeris
 from hiresaurora.general import _doppler_shift_wavelengths, AuroraLines, _log
 from hiresaurora.graphics import make_quicklook
-from hiresaurora.observing_geometry import Geometry
 from hiresaurora.masking import _Mask
+from hiresaurora.observing_geometry import Geometry
 
 
 class TraceFitError(Exception):
@@ -250,32 +252,21 @@ class _LineData:
     """
     Process individual data for a given emisison line or multiplet.
     """
-    def __init__(self, log: list,
+    def __init__(self,
                  reduced_data_directory: str or Path,
-                 aperture_radius: u.Quantity, average_aperture_scale: float,
-                 horizontal_offset: int or float or dict = 0.0,
-                 trim_top: int = 2, trim_bottom: int = 2,
-                 background_residual: [str] = None):
+                 aperture_radius: u.Quantity,
+                 trim_top: int = 2,
+                 trim_bottom: int = 2,
+                 systematic_trace_offset: float = 0.0,
+                 doppler_shift_background: bool = False):
         """
         Parameters
         ----------
-        log : list
-            List containing log entries to be written to file at the end of the
-            calibration pipeline.
         reduced_data_directory : str or Path
             File path to the reduced data directory from the HIRES data
             reduction pipeline.
         aperture_radius : u.Quantity
             The extraction aperture radius in arcsec.
-        average_aperture_scale : float
-            Factor to scale the aperture radius by for the average images.
-        horizontal_offset : int or float
-            Any additional offset if the wavelength solution is off. If an int
-            or float, it will apply to all wavelengths. If it's a dict, then it
-            will only apply to the transition indicated in the key. For
-            example, it could be `{'[O I] 557.7 nm': -3}`, which would offset
-            the wavelength solution for the retrieval of the 557.7 nm [O I]
-            brightness by -3 pixels.
         trim_top : int
             Number of additional rows to trim off the top of the rectified
             data (the background fitting significantly improves if the sawtooth
@@ -285,23 +276,23 @@ class _LineData:
             rectified data (the background fitting significantly improves if
             the sawtooth slit edges are excluded). The default is 2.
         """
-        self._log = log
         self._reduced_data_directory = Path(reduced_data_directory)
         self._aperture_radius = aperture_radius.to(u.arcsec)
-        self._average_aperture_scale = average_aperture_scale
-        self._horizontal_offset = horizontal_offset
         self._trim_top = trim_top
         self._trim_bottom = trim_bottom
-        self._background_residual = background_residual
+        self._systematic_trace_offset = systematic_trace_offset
+        self._doppler_shift_background = doppler_shift_background
         self._data = _RawData(self._reduced_data_directory)
         self._save_directory = self._parse_save_directory()
+        self._sigma = None
 
     def _parse_save_directory(self) -> Path:
         return Path(self._reduced_data_directory.parent, 'calibrated')
 
-    def _get_data_slice(self, order: int, line_wavelengths: u.Quantity,
-                        dwavelength: u.Quantity = 0.25 * u.nm
-                        ) -> (np.s_, np.s_):
+    def _get_data_slice(self,
+                        order: int,
+                        line_wavelengths: u.Quantity,
+                        dwavelength: u.Quantity = 0.5*u.nm) -> (np.s_, np.s_):
         """
         Get slice corresponding to ±dwavelength from Doppler-shifted
         wavelength. Uses minimum and maximum of entire observing sequence to
@@ -309,6 +300,16 @@ class _LineData:
         Makes slices for both data and wavelength edges (one additional entry
         along horizontal axis).
         """
+
+        keep1 = []
+        masked_data = self._data.science[0].data[order]
+        masked_data[np.where(masked_data == 0)] = np.nan
+        for col in range(masked_data.shape[1]):
+            if ~np.isnan(masked_data[:, col]).all():
+                keep1.append(col)
+        keep_left = np.min(keep1) + 2
+        keep_right = np.max(keep1) - 2
+
         lefts = []
         rights = []
         left_bound = np.min(line_wavelengths) - dwavelength
@@ -323,13 +324,10 @@ class _LineData:
                 right = wavelengths.shape[0]
             lefts.append(left)
             rights.append(right)
-        if self._trim_top == 0:
-            top = self._data.science[0].data.shape[0]
-        else:
-            top = -self._trim_top
-        data_slice = np.s_[self._trim_bottom:top, np.min(lefts):np.max(rights)]
-        edge_slice = np.s_[self._trim_bottom:-top,
-                           np.min(lefts):np.max(rights)+1]
+        left = np.max([np.min(lefts), keep_left])
+        right = np.min([np.max(rights), keep_right])
+        data_slice = np.s_[self._trim_bottom:-self._trim_top, left:right]
+        edge_slice = np.s_[self._trim_bottom:-self._trim_top, left:right+1]
         return data_slice, edge_slice
 
     @staticmethod
@@ -509,21 +507,34 @@ class _LineData:
 
     # noinspection DuplicatedCode
     def save_individual_fits(
-            self, line: u.Quantity, line_name: str,
+            self,
+            line: u.Quantity,
+            line_name: str,
             data_header: fits.Header,
-            trace_fit: float, trace_fit_unc: float,
-            geometry: Geometry, angular_radius: u.Quantity,
+            trace_fit: float,
+            trace_fit_unc: float,
+            geometry: Geometry,
+            angular_radius: u.Quantity,
             relative_velocity: u.Quantity,
-            target_masks: np.ndarray, background_masks: np.ndarray,
+            target_masks: np.ndarray,
+            background_masks: np.ndarray,
             aperture_edges: np.ndarray,
-            image_data: u.Quantity, image_data_unc: u.Quantity,
+            image_data: u.Quantity,
+            image_data_unc: u.Quantity,
             image_background: u.Quantity,
+            image_skyline: u.Quantity,
+            spectrum_1d: u.Quantity,
+            spectrum_1d_unc: u.Quantity,
+            best_fit_1d: u.Quantity,
+            best_fit_1d_unc: u.Quantity,
             wavelength_centers_rest: u.Quantity,
             wavelength_edges_rest: u.Quantity,
             wavelength_centers_shifted: u.Quantity,
             wavelength_edges_shifted: u.Quantity,
-            brightness: u.Quantity, brightness_unc: u.Quantity,
-            save_directory: Path, file_name: str):
+            brightness: u.Quantity,
+            brightness_unc: u.Quantity,
+            save_directory: Path,
+            file_name: str):
         """
         Save calibrated data for an individual observation as a FITS file.
         """
@@ -559,6 +570,10 @@ class _LineData:
                 data=image_background, header=data_header.copy(),
                 name='BACKGROUND_FIT',
                 comment='Best-fit background.')
+            primary_skyline_hdu = self._make_image_hdu(
+                data=image_skyline, header=data_header.copy(),
+                name='SKYLINE_FIT',
+                comment='Best-fit Earth sky line.')
             targeted_lines_hdu = self._make_image_hdu(data=line, header=None,
                                                       name='TARGETED_LINES')
             target_mask_hdu = self._make_image_hdu(
@@ -572,6 +587,14 @@ class _LineData:
             aperture_edges_hdu = self._make_image_hdu(
                 data=aperture_edges, header=None, name='APERTURE_EDGES',
                 comment='Pixel coordinates of edges of target aperture.')
+            spectrum_1d_hdu = self._make_image_hdu(
+                data=spectrum_1d, header=None, name='SPECTRUM_1D')
+            spectrum_1d_unc_hdu = self._make_image_hdu(
+                data=spectrum_1d_unc, header=None, name='SPECTRUM_1D_UNC')
+            best_fit_1d_hdu = self._make_image_hdu(
+                data=best_fit_1d, header=None, name='BEST_FIT_1D')
+            best_fit_1d_unc_hdu = self._make_image_hdu(
+                data=best_fit_1d_unc, header=None, name='BEST_FIT_1D_UNC')
             rest_wavelength_centers_hdu = self._make_image_hdu(
                 data=wavelength_centers_rest, header=None,
                 name='WAVELENGTH_CENTERS_REST',
@@ -589,12 +612,18 @@ class _LineData:
                 name='WAVELENGTH_EDGES_SHIFTED',
                 comment='Doppler-shifted wavelengths.')
 
-            hdus = [primary_hdu, primary_unc_hdu,
+            hdus = [primary_hdu,
+                    primary_unc_hdu,
                     primary_background_hdu,
+                    primary_skyline_hdu,
                     targeted_lines_hdu,
                     target_mask_hdu,
                     background_mask_hdu,
                     aperture_edges_hdu,
+                    spectrum_1d_hdu,
+                    spectrum_1d_unc_hdu,
+                    best_fit_1d_hdu,
+                    best_fit_1d_unc_hdu,
                     rest_wavelength_centers_hdu,
                     rest_wavelength_edges_hdu,
                     shifted_wavelength_centers_hdu,
@@ -611,19 +640,29 @@ class _LineData:
 
     # noinspection DuplicatedCode
     def save_average_fits(
-            self, line: u.Quantity, line_name: str,
+            self,
+            line: u.Quantity,
+            line_name: str,
             data_header: fits.Header,
             tracefit: float,
             angular_radius: u.Quantity,
-            target_masks: np.ndarray, background_masks: np.ndarray,
+            target_masks: np.ndarray,
+            background_masks: np.ndarray,
             aperture_edges: np.ndarray,
             image_data: u.Quantity,
+            image_data_unc: u.Quantity,
             image_background: u.Quantity,
+            image_skyline: u.Quantity,
+            spectrum_1d: u.Quantity,
+            spectrum_1d_unc: u.Quantity,
+            best_fit_1d: u.Quantity,
+            best_fit_1d_unc: u.Quantity,
             wavelength_centers_rest: u.Quantity,
             wavelength_edges_rest: u.Quantity,
             wavelength_centers_shifted: u.Quantity,
             wavelength_edges_shifted: u.Quantity,
-            brightness: u.Quantity, brightness_unc: u.Quantity,
+            brightness: u.Quantity,
+            brightness_unc: u.Quantity,
             save_directory: Path):
         """
         Save calibrated data for an average observation as a FITS file.
@@ -642,10 +681,18 @@ class _LineData:
                 angular_radius=angular_radius,
                 brightness=brightness,
                 brightness_unc=brightness_unc)
+            primary_unc_hdu = self._make_image_hdu(
+                data=image_data_unc, header=None, name='PRIMARY_UNC',
+                comment='Primary (wavelength-integrated imaging data) '
+                        'uncertainty.')
             primary_background_hdu = self._make_image_hdu(
                 data=image_background, header=data_header.copy(),
                 name='BACKGROUND_FIT',
                 comment='Best-fit background.')
+            primary_skyline_hdu = self._make_image_hdu(
+                data=image_skyline, header=data_header.copy(),
+                name='SKYLINE_FIT',
+                comment='Best-fit Earth sky line.')
             targeted_lines_hdu = self._make_image_hdu(
                 data=line, header=None, name='TARGETED_LINES')
             target_mask_hdu = self._make_image_hdu(
@@ -659,6 +706,14 @@ class _LineData:
             aperture_edges_hdu = self._make_image_hdu(
                 data=aperture_edges, header=None, name='APERTURE_EDGES',
                 comment='Pixel coordinates of edges of target aperture.')
+            spectrum_1d_hdu = self._make_image_hdu(
+                data=spectrum_1d, header=None, name='SPECTRUM_1D')
+            spectrum_1d_unc_hdu = self._make_image_hdu(
+                data=spectrum_1d_unc, header=None, name='SPECTRUM_1D_UNC')
+            best_fit_1d_hdu = self._make_image_hdu(
+                data=best_fit_1d, header=None, name='BEST_FIT_1D')
+            best_fit_1d_unc_hdu = self._make_image_hdu(
+                data=best_fit_1d_unc, header=None, name='BEST_FIT_1D_UNC')
             rest_wavelength_centers_hdu = self._make_image_hdu(
                 data=wavelength_centers_rest, header=None,
                 name='WAVELENGTH_CENTERS_REST',
@@ -676,11 +731,17 @@ class _LineData:
                 name='WAVELENGTH_EDGES_SHIFTED',
                 comment='Doppler-shifted wavelengths.')
             hdus = [primary_hdu,
+                    primary_unc_hdu,
                     primary_background_hdu,
+                    primary_skyline_hdu,
                     targeted_lines_hdu,
                     target_mask_hdu,
                     background_mask_hdu,
                     aperture_edges_hdu,
+                    spectrum_1d_hdu,
+                    spectrum_1d_unc_hdu,
+                    best_fit_1d_hdu,
+                    best_fit_1d_unc_hdu,
                     rest_wavelength_centers_hdu,
                     rest_wavelength_edges_hdu,
                     shifted_wavelength_centers_hdu,
@@ -694,9 +755,152 @@ class _LineData:
             hdul.close()
             return savename
 
-    # noinspection DuplicatedCode
-    def run_individual(self, line_wavelengths: u.Quantity, line_name: str,
-                       trace_offset: int or float = 0.0):
+    @staticmethod
+    def _set_overlap_to_nan(data: np.ndarray):
+        data[np.where(data == 0.0)] = np.nan
+        keep1 = []
+        for col in range(data.shape[1]):
+            if ~np.isnan(data[:, col]).all():
+                keep1.append(col)
+        keep1 = np.array(keep1)
+        ind = np.where(~np.isnan(np.sum(data[:, keep1], axis=1)))[0]
+        return data[ind]
+
+    @staticmethod
+    def _get_data_1d(data_2d,
+                     uncertainty_2d,
+                     target_mask) -> tuple[u.Quantity, u.Quantity]:
+        rows = np.where(np.isnan(np.sum(target_mask, axis=1)))[0]
+        calibrated_data_1d = np.sum(data_2d[rows], axis=0)
+        calibrated_unc_1d = np.sqrt(
+            np.sum(uncertainty_2d[rows]**2, axis=0))
+        return calibrated_data_1d, calibrated_unc_1d
+
+    @staticmethod
+    def _fit_line(line_wavelengths: u.Quantity,
+                  ratios: [float],
+                  shifted_wavelengths: u.Quantity,
+                  spectrum: u.Quantity,
+                  angular_width: u.Quantity,
+                  sigma: float) -> ModelResult:
+        dwavelength = np.gradient(shifted_wavelengths.value)
+        center = np.abs(shifted_wavelengths - line_wavelengths[0]).argmin()
+        if sigma is None:
+            sigma = angular_width.value * dwavelength[center] / 2.35482
+            vary = True
+        else:
+            vary = False
+        model = GaussianModel(prefix='peak0_')
+        model.set_param_hint('peak0_center',
+                             min=line_wavelengths.value[0]-0.5*sigma,
+                             max=line_wavelengths.value[0]+0.5*sigma)
+        model.set_param_hint('peak0_amplitude')
+        model.set_param_hint('peak0_sigma', vary=vary)
+        params = model.make_params(
+            center=line_wavelengths.value[0],
+            amplitude=10*spectrum.value[center]*dwavelength[center],
+            sigma=sigma)
+        left = center - 10
+        right = center + 10
+        if len(line_wavelengths) > 1:
+            for i in range(1, len(line_wavelengths)):
+                ratio = ratios[i]
+                center = np.abs(
+                    shifted_wavelengths - line_wavelengths[i]).argmin()
+                dwl = (line_wavelengths[i] - line_wavelengths[0]).value
+                next_model = GaussianModel(prefix=f'peak{i}_')
+                next_model.set_param_hint(f'peak{i}_amplitude',
+                                          expr=f'peak0_amplitude*{ratio}',
+                                          vary=False)
+                next_model.set_param_hint(f'peak{i}_sigma',
+                                          expr=f'peak0_sigma',
+                                          vary=False)
+                next_model.set_param_hint(f'peak{i}_center',
+                                          expr=f'peak0_center+{dwl}',
+                                          vary=False)
+                params += next_model.make_params(
+                    center=line_wavelengths.value[i],
+                    amplitude=spectrum.value.max(),
+                    sigma=sigma)
+                model += next_model
+                next_left = center - 10
+                next_right = center + 10
+                if next_left < left:
+                    left = next_left
+                if next_right > right:
+                    right = next_right
+        bounds = np.s_[left:right]
+        methods = ['powell', 'leastsq', 'least_squares', 'nelder', 'cg']
+        fit = None
+        for method in methods:
+            try:
+                fit = model.fit(spectrum.value[bounds], params,
+                                x=shifted_wavelengths.value[bounds],
+                                method=method)
+                unc = fit.params['peak0_amplitude'].stderr
+                if unc is not None:
+                    break
+            except (ValueError, AttributeError):
+                continue
+        return fit
+
+    @staticmethod
+    def _calcualte_brightness_from_1d_fit(fit: ModelResult,
+                                          wavelengths: u.Quantity):
+        n_models = np.unique([key for key in fit.params.keys()
+                              if 'amplitude' in key]).size
+        dwavelength = np.gradient(wavelengths.value)
+        best_fit = fit.eval(x=wavelengths.value)
+        brightness = np.sum(best_fit * dwavelength)
+        unc = 0
+        for i in range(n_models):
+            fit_unc = fit.params[f'peak{i}_amplitude'].stderr
+            if (fit_unc is None) or (np.isnan(fit_unc)):
+                fit_unc = np.nanstd(fit.data) * np.mean(dwavelength)
+            unc = np.sqrt(unc**2 + fit_unc**2)
+        if brightness < 0:
+            brightness = 0
+        return brightness * u.R, unc * u.R
+
+    @staticmethod
+    def _align_by_trace(data, unc, traces):
+        n, n_spa, n_spe = data.shape
+        empty_data = np.zeros((n_spa, n_spe))
+        new_data = np.full((n, n_spa*3, n_spe), np.nan)
+        new_unc = np.zeros((n, n_spa*3, n_spe))
+        count = np.zeros((n_spa*3, n_spe))
+        shift_params = dict(order=1, prefilter=False)
+        for i in range(n):
+            padded_data = np.vstack((empty_data, data[i], empty_data))
+            padded_unc = np.vstack((empty_data, unc[i], empty_data))
+            padded_count = np.vstack(
+                (empty_data, np.ones_like(data[i]), empty_data))
+            shifted_data = np.full_like(padded_data, np.nan)
+            shifted_unc = np.full_like(padded_unc, np.nan)
+            shifted_count = np.zeros_like(padded_data)
+            for j in range(n_spe):
+                shifted_data[:, j] = shift(
+                    padded_data[:, j], -(traces[i]-n_spa/2), **shift_params)
+                shifted_unc[:, j] = shift(
+                    padded_unc[:, j], -(traces[i]-n_spa/2), **shift_params)
+                shifted_count[:, j] = shift(
+                    padded_count[:, j], -(traces[i]-n_spa/2), **shift_params)
+            shifted_data[shifted_data == 0] = np.nan
+            shifted_unc[shifted_unc == 0] = np.nan
+            shifted_count[shifted_count > 0] = 1
+            new_data[i] = shifted_data
+            new_unc[i] = shifted_unc
+            count += shifted_count
+        new_data = np.nanmean(new_data, axis=0)
+        new_unc = np.sqrt(np.nansum(new_unc**2, axis=0)) / count
+        ind = ~np.isnan(new_data).all(axis=1)
+        return new_data[ind] * u.R / u.nm, new_unc[ind] * u.R / u.nm
+
+    def run(self,
+            line_wavelengths: u.Quantity,
+            line_name: str,
+            line_ratio: [float],
+            sigma: float = None):
         """
         Process all individual observations for a set of lines (singlet or
         multiplet).
@@ -708,8 +912,10 @@ class _LineData:
         line_name : u.Quantity
             The name of the line (will become the directory where the results
             are saved).
-        trace_offset : int or float
-            Additional systematic vertical offset for individual traces.
+        line_ratio : [float]
+            Fixed amplitude ratios of line components.
+        sigma : float
+            Fixed width (in pixels) for 1D Gaussian fit.
 
         Returns
         -------
@@ -720,6 +926,7 @@ class _LineData:
         spatial_scale = self._data.science[0].data_header['SPASCALE']
         spectral_scale = self._data.science[0].data_header['SPESCALE']
         slit_width_bins = self._data.science[0].data_header['SLITWIDB']
+        pixel_size = spatial_scale * spectral_scale * u.arcsec**2
         calibration = _FluxCalibration(
             reduced_data_directory=self._reduced_data_directory,
             wavelengths=line_wavelengths, order=order, trim_top=self._trim_top,
@@ -736,108 +943,132 @@ class _LineData:
         shifted_wavelength_edge_selection = (
             self._data.science[0].doppler_shifted_wavelength_edges[order]
             [select_edges[1]])
+        horizontal_positions = self._get_line_indices(
+            wavelengths=shifted_wavelength_selection,
+            line_wavelengths=line_wavelengths)
         n_traces = len(self._data.trace)
         n_science = len(self._data.science)
+        trace_align_average = True
+        first_trace_center = None
         if n_traces != n_science:
-            _log(self._log,
-                 f"      Warning! The number of trace images ({n_traces}) "
-                 f"doesn't match the number of science images ({n_science}). " 
-                 f"The pipeline will only use the first trace image.")
+            msg = (f"      Warning! The number of trace images ({n_traces}) "
+                   f"doesn't match the number of science images ({n_science})."
+                   f" The pipeline will only use the first trace image.")
+            _log(self._save_directory, msg)
             use_trace = self._data.trace[0]
+            trace_align_average = False
             traces = []
             for i in range(n_science):
                 traces.append(use_trace)
         else:
             traces = self._data.trace
+        individual_data_2d = []
+        individual_unc_2d = []
+        individual_traces = []
+        satellite_radii = []
+        satellite_sizes = []
+        sigmas = []
         for data, trace in zip(self._data.science, traces):
             geometry = Geometry(target=data.data_header['TARGET'],
                                 observation_time=data.data_header['DATE-OBS'])
-            data_selection = deepcopy(data.data[order][select])
-            unc_selection = deepcopy(data.uncertainty[order][select])
-            trace_data_selection = deepcopy(trace.data[order][select])
-            trace_unc_selection = deepcopy(trace.uncertainty[order][select])
+            data_selection = self._set_overlap_to_nan(
+                deepcopy(data.data[order][select]))
+            unc_selection = self._set_overlap_to_nan(
+                deepcopy(data.uncertainty[order][select]))
+            trace_data_selection = self._set_overlap_to_nan(
+                deepcopy(trace.data[order][select]))
+            trace_unc_selection = self._set_overlap_to_nan(
+                deepcopy(trace.uncertainty[order][select]))
             try:
                 trace_fit, trace_fit_unc = _fit_trace(
                     trace_data_selection, trace_unc_selection)
-                trace_fit = trace_fit + trace_offset
+                trace_fit = trace_fit + self._systematic_trace_offset
+                if first_trace_center is None:
+                    first_trace_center = trace_fit
             except TraceFitError:
                 trace_fit = 'error'
                 trace_fit_unc = 'error'
-            horizontal_positions = self._get_line_indices(
-                wavelengths=shifted_wavelength_selection,
-                line_wavelengths=line_wavelengths)
-            if isinstance(self._horizontal_offset, dict):
-                if line_name in self._horizontal_offset.keys():
-                    horizontal_offset = self._horizontal_offset[line_name]
-                else:
-                    horizontal_offset = 0.0
-            else:
-                horizontal_offset = self._horizontal_offset
             mask = _Mask(data=data_selection, trace_center=trace_fit,
                          horizontal_positions=horizontal_positions,
-                         horizontal_offset=horizontal_offset,
                          spatial_scale=spatial_scale,
                          spectral_scale=spectral_scale,
                          aperture_radius=self._aperture_radius,
                          satellite_radius=data.angular_radius)
-            calibrated_data, calibrated_unc = calibration.calibrate(
+
+            calibrated_data_2d, calibrated_unc_2d = calibration.calibrate(
                 data_selection, unc_selection,
                 target_size=mask.satellite_size)
 
-            # integrate 2D spectra
-            dwavelength = np.repeat(
-                np.gradient(shifted_wavelength_selection)[None, :],
-                calibrated_data.shape[0], axis=0)
-            imaging_data = calibrated_data * dwavelength
-            imaging_data_unc = calibrated_unc * dwavelength
-
             # calculate background
-            if line_name in self._background_residual:
-                fit_residual = True
-            else:
-                fit_residual = False
             calibrated_background = _Background(
-                data=imaging_data,
-                uncertainty=imaging_data_unc,
+                data_2d=calibrated_data_2d,
+                uncertainty_2d=calibrated_unc_2d,
                 rest_wavelengths=rest_wavelength_selection,
+                shifted_wavelength_centers=shifted_wavelength_selection,
+                shifted_wavelength_edges=shifted_wavelength_edge_selection,
                 slit_width_bins=slit_width_bins,
                 mask=mask,
                 radius=mask.aperture_radius.value,
                 spectral_scale=spectral_scale,
                 spatial_scale=spatial_scale,
-                fit_residual=fit_residual)
+                allow_doppler_shift=self._doppler_shift_background)
 
-            # calculate integrated brightness
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', category=RuntimeWarning)
-                brightness = np.nansum(
-                    calibrated_background.data.value * mask.background_mask
-                ) * imaging_data.unit
-                brightness_unc = np.nanstd(
-                    calibrated_background.data.value * mask.target_mask)
-                # brightness_unc = np.sqrt(
-                #     np.nansum(calibrated_background.uncertainty.value *
-                #               mask.background_mask))
-                brightness_unc = brightness_unc * imaging_data.unit
-                brightness_unc *= np.sqrt(mask.aperture_size_pix)
+            individual_data_2d.append(calibrated_background.data_2d)
+            individual_unc_2d.append(calibrated_background.uncertainty_2d)
+            if trace_fit != 'error':
+                individual_traces.append(trace_fit)
+            else:
+                individual_traces.append(
+                    calibrated_background.data_2d.shape[0] / 2)
+            satellite_radii.append(data.angular_radius.value)
+            satellite_sizes.append(mask.satellite_size.value)
+
+            calibrated_data_1d, calibrated_unc_1d = self._get_data_1d(
+                calibrated_background.bg_sub_data_2d,
+                calibrated_background.bg_sub_uncertainty_2d,
+                mask.target_mask)
+
+            angular_width = 2 * mask.satellite_radius / spectral_scale
+            fit_1d = self._fit_line(line_wavelengths,
+                                    line_ratio,
+                                    shifted_wavelength_selection,
+                                    calibrated_data_1d,
+                                    angular_width=angular_width,
+                                    sigma=sigma)
+            if fit_1d is None:
+                continue
+            brightness, brightness_unc = (
+                self._calcualte_brightness_from_1d_fit(
+                    fit_1d, shifted_wavelength_selection))
+            sigmas.append(fit_1d.params['peak0_sigma'].value)
+
+            # integrate 2D spectra
+            dwavelength = np.repeat(
+                np.gradient(shifted_wavelength_selection)[None, :],
+                calibrated_data_2d.shape[0], axis=0)
+            imaging_data = calibrated_background.data_2d * dwavelength
+            imaging_data_unc = (
+                    calibrated_background.uncertainty_2d * dwavelength)
 
             # calibrate data to "per pixel" assuming emission from disk the
             # size of the target satellite
-            scale = mask.satellite_size / mask.pixel_size
+            scale = mask.satellite_size / pixel_size
             imaging_data *= scale
             imaging_data_unc *= scale
 
             # calculate background
             imaging_background = _Background(
-                data=imaging_data,
-                uncertainty=imaging_data_unc,
+                data_2d=imaging_data,
+                uncertainty_2d=imaging_data_unc,
                 rest_wavelengths=rest_wavelength_selection,
+                shifted_wavelength_centers=shifted_wavelength_selection,
+                shifted_wavelength_edges=shifted_wavelength_edge_selection,
                 slit_width_bins=slit_width_bins,
                 mask=mask,
                 radius=mask.aperture_radius.value,
                 spectral_scale=spectral_scale,
                 spatial_scale=spatial_scale,
-                fit_residual=fit_residual)
+                allow_doppler_shift=self._doppler_shift_background)
 
             # save FITS file
             file_path = self.save_individual_fits(
@@ -854,7 +1085,14 @@ class _LineData:
                 aperture_edges=mask.edges,
                 image_data=imaging_data,
                 image_data_unc=imaging_data_unc,
-                image_background=imaging_background.best_fit,
+                image_background=imaging_background.best_fit_2d,
+                image_skyline=imaging_background.sky_line_fit,
+                spectrum_1d=calibrated_data_1d,
+                spectrum_1d_unc=calibrated_unc_1d,
+                best_fit_1d=fit_1d.eval(
+                    x=shifted_wavelength_selection.value) * u.R / u.nm,
+                best_fit_1d_unc=fit_1d.eval_uncertainty(
+                    x=shifted_wavelength_selection.value) * u.R / u.nm,
                 wavelength_centers_rest=rest_wavelength_selection,
                 wavelength_edges_rest=rest_wavelength_edge_selection,
                 wavelength_centers_shifted=shifted_wavelength_selection,
@@ -867,162 +1105,110 @@ class _LineData:
             # make quicklook product
             make_quicklook(file_path=file_path)
 
-    # noinspection DuplicatedCode
-    def run_average(self, line_wavelengths: u.Quantity, line_name: str,
-                    exclude: [int],
-                    trace_offset: int or float = 0.0):
-        """
-        Process average of all individual observations for a set of lines
-        (singlet or multiplet).
-
-        Parameters
-        ----------
-        line_wavelengths : u.Quantity
-            Line or set of lines to process.
-        line_name : u.Quantity
-            The name of the line (will become the directory where the results
-            are saved).
-        exclude : [int]
-            Observations to exclude from averaging.
-        trace_offset : int or float
-            Additional vertical offset for "trace" in the average image.
-
-        Returns
-        -------
-        None.
-        """
-        order = self._data.find_order_with_wavelength(line_wavelengths)
-        select, select_edges = self._get_data_slice(order, line_wavelengths)
-        data_header = self._data.science[0].data_header
-        spatial_scale = data_header['SPASCALE']
-        spectral_scale = data_header['SPESCALE']
-        slit_width_bins = self._data.science[0].data_header['SLITWIDB']
-        unit = self._data.science[0].data.unit
-        angular_radius = self._data.science[0].angular_radius
-
-        if exclude is not None:
-            use_data = np.array([i for i in np.arange(len(self._data.science))
-                                 if i not in exclude])
+        # average
+        individual_data_2d = np.array(individual_data_2d)
+        individual_unc_2d = np.array(individual_unc_2d)
+        individual_traces = np.array(individual_traces)
+        count = individual_data_2d.shape[0]
+        if trace_align_average:
+            average_data_2d, average_unc_2d = self._align_by_trace(
+                individual_data_2d, individual_unc_2d, individual_traces)
+            trace_center = average_data_2d.shape[0] / 2
         else:
-            use_data = np.arange(len(self._data.science))
+            average_data_2d = np.nanmean(
+                individual_data_2d, axis=0) * u.R / u.nm
+            average_unc_2d = np.sum(
+                individual_unc_2d**2, axis=0) / count * u.R / u.nm
+            trace_center = first_trace_center
+        satellite_radius = np.mean(satellite_radii) * u.arcsec
+        satellite_size = np.mean(satellite_sizes) * u.arcsec ** 2
 
-        calibration = _FluxCalibration(
-            reduced_data_directory=self._reduced_data_directory,
-            wavelengths=line_wavelengths, order=order, trim_top=self._trim_top,
-            trim_bottom=self._trim_bottom)
-
-        rest_wavelength_selection = (
-            self._data.science[0].rest_wavelength_centers[order]
-            [select[1]])
-        rest_wavelength_edge_selection = (
-            self._data.science[0].rest_wavelength_edges[order]
-            [select_edges[1]])
-        shifted_wavelength_selection = (
-            self._data.science[0].doppler_shifted_wavelength_centers[order]
-            [select[1]])
-        shifted_wavelength_edge_selection = (
-            self._data.science[0].doppler_shifted_wavelength_edges[order]
-            [select_edges[1]])
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            data_selection = np.nanmean(
-                [deepcopy(data.data[order][select].value)
-                 for data in np.array(self._data.science)[use_data]],
-                axis=0) * unit
-            unc_selection = np.sqrt(
-                np.nansum([deepcopy(data.uncertainty[order][select].value) ** 2
-                           for data in np.array(self._data.science)[use_data]],
-                          axis=0)) * unit / len(use_data)
-        trace_fit = (data_selection.shape[0] - 1) / 2 + trace_offset
-        horizontal_positions = self._get_line_indices(
-            wavelengths=shifted_wavelength_selection,
-            line_wavelengths=line_wavelengths)
-        if isinstance(self._horizontal_offset, dict):
-            if line_name in self._horizontal_offset.keys():
-                horizontal_offset = self._horizontal_offset[line_name]
-            else:
-                horizontal_offset = 0.0
-        else:
-            horizontal_offset = self._horizontal_offset
-        mask = _Mask(data=data_selection, trace_center=trace_fit,
+        mask = _Mask(data=average_data_2d,
+                     trace_center=trace_center,
                      horizontal_positions=horizontal_positions,
-                     horizontal_offset=horizontal_offset,
                      spatial_scale=spatial_scale,
                      spectral_scale=spectral_scale,
-                     aperture_radius=(self._aperture_radius *
-                                      self._average_aperture_scale),
-                     satellite_radius=angular_radius)
-        calibrated_data, calibrated_unc = calibration.calibrate(
-            data_selection, unc_selection,
-            target_size=mask.satellite_size)
+                     aperture_radius=self._aperture_radius,
+                     satellite_radius=satellite_radius)
+
+        calibrated_background = _Background(
+            data_2d=average_data_2d,
+            uncertainty_2d=average_unc_2d,
+            rest_wavelengths=rest_wavelength_selection,
+            shifted_wavelength_centers=shifted_wavelength_selection,
+            shifted_wavelength_edges=shifted_wavelength_edge_selection,
+            slit_width_bins=slit_width_bins,
+            mask=mask,
+            radius=mask.aperture_radius.value,
+            spectral_scale=spectral_scale,
+            spatial_scale=spatial_scale,
+            allow_doppler_shift=self._doppler_shift_background)
+
+        calibrated_data_1d, calibrated_unc_1d = self._get_data_1d(
+            calibrated_background.bg_sub_data_2d,
+            calibrated_background.bg_sub_uncertainty_2d,
+            mask.target_mask)
+
+        angular_width = 2 * mask.satellite_radius / spectral_scale
+        fit_1d = self._fit_line(line_wavelengths,
+                                line_ratio,
+                                shifted_wavelength_selection,
+                                calibrated_data_1d,
+                                angular_width=angular_width,
+                                sigma=sigma)
+        brightness, brightness_unc = (
+            self._calcualte_brightness_from_1d_fit(
+                fit_1d, shifted_wavelength_selection))
+        if fit_1d is None:
+            return
+        sigmas.append(fit_1d.params['peak0_sigma'].value)
 
         # integrate 2D spectra
         dwavelength = np.repeat(
             np.gradient(shifted_wavelength_selection)[None, :],
-            calibrated_data.shape[0], axis=0)
-        imaging_data = calibrated_data * dwavelength
-        imaging_data_unc = calibrated_unc * dwavelength
-
-        # calculate background
-        if line_name in self._background_residual:
-            fit_residual = True
-        else:
-            fit_residual = False
-        calibrated_background = _Background(
-            data=imaging_data,
-            uncertainty=imaging_data_unc,
-            rest_wavelengths=rest_wavelength_selection,
-            slit_width_bins=slit_width_bins,
-            mask=mask,
-            radius=mask.aperture_radius.value,
-            spectral_scale=spectral_scale,
-            spatial_scale=spatial_scale,
-            fit_residual=fit_residual)
-
-        # calculate integrated brightness
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=RuntimeWarning)
-            brightness = np.nansum(
-                calibrated_background.data.value * mask.background_mask
-            ) * imaging_data.unit
-            brightness_unc = np.nanstd(
-                calibrated_background.data.value * mask.target_mask)
-            # brightness_unc = np.sqrt(
-            #     np.nansum(calibrated_background.uncertainty.value *
-            #               mask.background_mask))
-            brightness_unc = brightness_unc * imaging_data.unit
-            brightness_unc *= np.sqrt(mask.aperture_size_pix)
+            average_data_2d.shape[0], axis=0)
+        imaging_data = calibrated_background.data_2d * dwavelength
+        imaging_data_unc = (
+                calibrated_background.uncertainty_2d * dwavelength)
 
         # calibrate data to "per pixel" assuming emission from disk the
         # size of the target satellite
-        scale = mask.satellite_size / mask.pixel_size
+        scale = satellite_size / pixel_size
         imaging_data *= scale
         imaging_data_unc *= scale
 
-        # calculate background
         imaging_background = _Background(
-            data=imaging_data,
-            uncertainty=imaging_data_unc,
+            data_2d=imaging_data,
+            uncertainty_2d=imaging_data_unc,
             rest_wavelengths=rest_wavelength_selection,
+            shifted_wavelength_centers=shifted_wavelength_selection,
+            shifted_wavelength_edges=shifted_wavelength_edge_selection,
             slit_width_bins=slit_width_bins,
             mask=mask,
             radius=mask.aperture_radius.value,
             spectral_scale=spectral_scale,
             spatial_scale=spatial_scale,
-            fit_residual=fit_residual)
+            allow_doppler_shift=self._doppler_shift_background)
 
-        # save FITS file
         file_path = self.save_average_fits(
             line=line_wavelengths,
             line_name=line_name,
-            data_header=data_header,
-            tracefit=trace_fit,
+            data_header=self._data.science[0].data_header,
+            tracefit=average_data_2d.shape[0]/2,
             target_masks=mask.target_masks,
-            angular_radius=angular_radius,
+            angular_radius=satellite_radius,
             background_masks=mask.background_masks,
             aperture_edges=mask.edges,
             image_data=imaging_data,
-            image_background=imaging_background.best_fit,
+            image_data_unc=imaging_data_unc,
+            image_background=imaging_background.best_fit_2d,
+            image_skyline=imaging_background.sky_line_fit,
+            spectrum_1d=calibrated_data_1d,
+            spectrum_1d_unc=calibrated_unc_1d,
+            best_fit_1d=fit_1d.eval(
+                x=shifted_wavelength_selection.value) * u.R / u.nm,
+            best_fit_1d_unc=fit_1d.eval_uncertainty(
+                x=shifted_wavelength_selection.value) * u.R / u.nm,
             wavelength_centers_rest=rest_wavelength_selection,
             wavelength_edges_rest=rest_wavelength_edge_selection,
             wavelength_centers_shifted=shifted_wavelength_selection,
@@ -1033,27 +1219,28 @@ class _LineData:
 
         make_quicklook(file_path=file_path)
 
+        self._sigma = np.mean(sigmas)
 
-def calibrate_data(log: list,
-                   reduced_data_directory: str or Path,
+    @property
+    def sigma(self) -> float or None:
+        return self._sigma
+
+
+def calibrate_data(reduced_data_directory: str or Path,
                    extended: bool,
-                   trim_bottom: int, trim_top: int,
+                   trim_bottom: int,
+                   trim_top: int,
                    aperture_radius: u.Quantity,
-                   average_aperture_scale: float = 1.0,
-                   horizontal_offset: int or float or dict = 0,
                    exclude: [int] = None,
-                   average_trace_offset: int or float = 0.0,
-                   individual_trace_offset: int or float = 0.0,
                    skip: [str] = None,
-                   fit_background_residual: [str] = None):
+                   systematic_trace_offset: float = 0.0,
+                   doppler_shift_background: bool = False):
     """
     This function runs the aurora data calibration pipeline for all wavelengths
     (default O and H or extended Io set).
 
     Parameters
     ----------
-    log : list
-        List containing logged items.
     reduced_data_directory : str or Path
         Absolute path to reduced data from the HIRES pipeline.
     extended : bool
@@ -1064,61 +1251,61 @@ def calibrate_data(log: list,
         How many rows to trim from the top of each order.
     aperture_radius : u.Quantity
         Aperture to use when retrieving brightness in [arcsec].
-    average_aperture_scale : float
-        If you want to scale the aperture radius for the averages.
-    horizontal_offset : int or float or dict
-        Any additional offset if the wavelength solution is off. If an int
-        or float, it will apply to all wavelengths. If it's a dict, then it
-        will only apply to the transition indicated in the key. For
-        example, it could be `{'[O I] 557.7 nm': -3}`, which would offset
-        the wavelength solution for the retrieval of the 557.7 nm [O I]
-        brightness by -3 pixels.
     exclude : [int]
         Indices of observations to exclude from averaging.
-    average_trace_offset : int or float
-        Additional vertical offset for "trace" in the average image.
-    individual_trace_offset : int or float
-        Additional systematic vertical offset for individual traces.
     skip : [str]
         Lines to skip when averaging. Example: `skip=['557.7 nm [O I] ']`.
         Default is None.
-    fit_background_residual : bool
-        Lines for which you want to fit extra residual. `656.3 nm H I` is on by
-        default.
+    systematic_trace_offset : int or float
+        Additional vertical offset for the "trace" in all images.
+    doppler_shift_background : bool
+        Whether or not to allow the background to Doppler shift. If the slit
+        wasn't very long or the signal isn't very strong, this might produce
+        bad results and should be turned off.
     """
     if skip is None:
         skip = []
-    if fit_background_residual is None:
-        fit_background_residual = ['656.3 nm H I']
     aurora_lines = AuroraLines(extended=extended)
-    line_data = _LineData(log=log,
-                          reduced_data_directory=reduced_data_directory,
-                          horizontal_offset=horizontal_offset,
+    log_path = Path(reduced_data_directory.parent, 'calibrated')
+    if not log_path.exists():
+        log_path.mkdir(parents=True)
+    line_data = _LineData(reduced_data_directory=reduced_data_directory,
                           trim_top=trim_top,
                           trim_bottom=trim_bottom,
                           aperture_radius=aperture_radius,
-                          average_aperture_scale=average_aperture_scale,
-                          background_residual=fit_background_residual)
+                          systematic_trace_offset=systematic_trace_offset,
+                          doppler_shift_background=doppler_shift_background)
 
     lines = aurora_lines.wavelengths
     line_names = aurora_lines.names
+    line_ratios = aurora_lines.ratios
 
-    for line_wavelengths, line_name in zip(lines, line_names):
-        if line_name in skip:
-            _log(log, f'   Skipping {line_name}...')
+    # fit 630.0 nm to get sigma
+    _log(log_path, f'   Calculating apparent satellite width...')
+    ind = np.abs(
+        np.array([np.mean(line.value) for line in lines]) - 630.0).argmin()
+    line_data.run(line_wavelengths=lines[ind],
+                  line_name=line_names[ind],
+                  line_ratio=line_ratios[ind])
+    sigma = line_data.sigma
+
+    for (wavelength, name, ratio) in zip(lines, line_names, line_ratios):
+        if name in skip:
+            _log(log_path, f'   Skipping {name}...')
             continue
-        _log(log, f'   Calibrating {line_name} data...')
+        _log(log_path, f'   Calibrating {name} data...')
         try:
-            line_data.run_average(line_wavelengths=line_wavelengths,
-                                  line_name=line_name,
-                                  exclude=exclude,
-                                  trace_offset=average_trace_offset)
-            line_data.run_individual(line_wavelengths=line_wavelengths,
-                                     line_name=line_name,
-                                     trace_offset=individual_trace_offset)
+            line_data.run(line_wavelengths=wavelength,
+                          line_name=name,
+                          line_ratio=ratio,
+                          sigma=sigma)
         except WavelengthNotFoundError:
-            _log(log, f'      {line_name} not captured by HIRES setup! '
-                      f'Skipping...')
+            _log(log_path,
+                 f'      {name} not captured by HIRES setup! Skipping...')
+            continue
+        except BackgroundFitError:
+            _log(log_path,
+                 f'      {name} background fit failed! Skipping...')
             continue
     if exclude is not None:
-        _log(log, f'Files {exclude} excluded from averaging.')
+        _log(log_path, f'Files {exclude} excluded from averaging.')

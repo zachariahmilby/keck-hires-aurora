@@ -4,15 +4,19 @@ from pathlib import Path
 import astropy.units as u
 
 from hiresaurora.data_processing import calibrate_data
-from hiresaurora.general import _log, _write_log
+from hiresaurora.general import _log, _make_log
 from hiresaurora.tabulation import tabulate_results
 
 
 class AuroraPipeline:
 
-    def __init__(self, reduced_data_directory: str or Path,
-                 extended: bool = False, exclude_from_averaging: [int] = None,
-                 skip: [str] = None, fit_background_residual: [str] = None):
+    def __init__(self,
+                 reduced_data_directory: str or Path,
+                 extended: bool = False,
+                 exclude_from_averaging: [int] = None,
+                 skip: [str] = None,
+                 systematic_trace_offset: float = 0.0,
+                 doppler_shift_background: bool = True):
         """
         Parameters
         ----------
@@ -30,7 +34,8 @@ class AuroraPipeline:
         self._extended = extended
         self._exclude = exclude_from_averaging
         self._skip = skip
-        self._fit_background_residual = fit_background_residual
+        self._systematic_trace_offset = systematic_trace_offset
+        self._doppler_shift_background = doppler_shift_background
         self._calibrated_data_directory = \
             self._parse_calibrated_data_directory()
 
@@ -56,11 +61,10 @@ class AuroraPipeline:
             calibrated_data_path=self._calibrated_data_directory,
             excluded=self._exclude, extended=self._extended)
 
-    def run(self, trim_bottom: int, trim_top: int, aperture_radius: u.Quantity,
-            average_aperture_scale: float,
-            horizontal_offset: int or float or dict,
-            average_trace_offset: int or float = 0.0,
-            systematic_trace_offset: int or float = 0.0) -> None:
+    def run(self,
+            trim_bottom: int,
+            trim_top: int,
+            aperture_radius: u.Quantity) -> None:
         """
         Run the aurora pipeline.
 
@@ -76,47 +80,29 @@ class AuroraPipeline:
             slit edges are excluded). The default is 2.
         aperture_radius : u.Quantity
             The extraction aperture radius in arcsec.
-        average_aperture_scale : float
-            Factor to scale the aperture radius by for the average images.
-        horizontal_offset : int or float or dict
-            Any additional offset if the wavelength solution is off. If an int
-            or float, it will apply to all wavelengths. If it's a dict, then it
-            will only apply to the transition indicated in the key. For
-            example, it could be `{'[O I] 557.7 nm': -3}`, which would offset
-            the wavelength solution for the retrieval of the 557.7 nm [O I]
-            brightness by -3 pixels.
-        average_trace_offset : int or float
-            Additional vertical offset for the "trace" in the average image.
-        systematic_trace_offset : int or float
-            Additional systematic vertical offset for individual traces.
 
         Returns
         -------
         None.
         """
-        log = []
         t0 = datetime.now()
+        log_path = self._parse_calibrated_data_directory()
+        _make_log(log_path)
         dataset = self._reduced_data_directory.parent.name
-        _log(log, f"\n{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')}")
-        _log(log, f'Running aurora calibration pipeline for {dataset}...')
+        _log(log_path,
+             f"\n{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S.%f')}")
+        _log(log_path, f'Running aurora calibration pipeline for {dataset}...')
         calibrate_data(
-            log=log,
             reduced_data_directory=self._reduced_data_directory,
             extended=self._extended, trim_bottom=trim_bottom,
             trim_top=trim_top, aperture_radius=aperture_radius,
-            average_aperture_scale=average_aperture_scale,
-            horizontal_offset=horizontal_offset,
             exclude=self._exclude,
-            average_trace_offset=average_trace_offset,
-            individual_trace_offset=systematic_trace_offset,
             skip=self._skip,
-            fit_background_residual=self._fit_background_residual)
+            systematic_trace_offset=self._systematic_trace_offset,
+            doppler_shift_background=self._doppler_shift_background)
         self.summarize()
         elapsed_time = datetime.now() - t0
-        _log(log, f'Calibration complete, time elapsed: {elapsed_time}.')
-        _write_log(
-            Path(self._reduced_data_directory.parent, 'calibrated', 'log.txt'),
-            log)
+        _log(log_path, f'Calibration complete, time elapsed: {elapsed_time}.')
 
     @property
     def reduced_data_directory(self) -> Path:

@@ -11,13 +11,38 @@ from hiresaurora.ephemeris import _get_ephemeris
 from hiresaurora.general import _package_directory, _doppler_shift_wavelengths
 
 
+def _get_solar_spectral_brightness() -> (u.Quantity, u.Quantity):
+    """
+    This function retrieves the theoretical solar spectral radiance above
+    Earth's atmosphere at 1 au from the Sun from 320 to 1000 nm at 1 nm
+    resolution. The data are actually spectral irradiance (W/m²/nm) which I
+    convert to radiance by dividing by pi, giving units of W/m²/nm/sr. I
+    then convert to photon brightness by dividing by photon energy for each
+    wavelength. The spectral irradiance data come from the
+    Coddington et al. (2023) TSIS-1 Hybrid Solar Reference Spectrum (HSRS).
+    """
+    filepath = Path(_package_directory, 'anc',
+                    'solar_spectral_irradiance.dat')
+    wavelength, irradiance = np.genfromtxt(filepath, delimiter=',',
+                                           skip_header=True, unpack=True)
+    wavelength = wavelength * u.nm
+    irradiance = irradiance * u.W / u.m ** 2 / u.nm
+    radiance = irradiance / (np.pi * u.sr)
+    photon_energy = c.c * c.h / wavelength / u.photon  # noqa
+    brightness = radiance / photon_energy
+    return wavelength.to(u.nm), brightness.to(u.R / u.nm)
+
+
 class _FluxCalibration:
     """
     Calcualtes flux calibrations and their corresponding uncertainty from
     Jupiter meridian observations. Results are in (electrons/s/sr)/(R/nm).
     """
-    def __init__(self, reduced_data_directory: str or Path,
-                 wavelengths: u.Quantity, order: int, trim_bottom: int,
+    def __init__(self,
+                 reduced_data_directory: str or Path,
+                 wavelengths: u.Quantity,
+                 order: int,
+                 trim_bottom: int,
                  trim_top: int):
         self._reduced_data_directory = Path(reduced_data_directory)
         self._wavelength = wavelengths.mean().to(u.nm).value
@@ -34,29 +59,6 @@ class _FluxCalibration:
         return sorted(filepath.glob('*.fits.gz'))[0]
 
     # noinspection PyUnresolvedReferences
-    @staticmethod
-    def _get_solar_spectral_brightness() -> (u.Quantity, u.Quantity):
-        """
-        This function retrieves the theoretical solar spectral radiance above
-        Earth's atmosphere at 1 au from the Sun from 320 to 1000 nm at 1 nm
-        resolution. The data are actually spectral irradiance (W/m²/nm) which I
-        convert to radiance by dividing by pi, giving units of W/m²/nm/sr. I
-        then convert to photon brightness by dividing by photon energy for each
-        wavelength. The spectral irradiance data come from the 2000 ASTM
-        Standard Extraterrestrial Spectrum  Reference E-490-00 downloaded from
-        https://www.nrel.gov/grid/solar-resource/spectra-astm-e490.html.
-        """
-        filepath = Path(_package_directory, 'anc',
-                        'solar_spectral_irradiance.dat')
-        wavelength, irradiance = np.genfromtxt(filepath, delimiter=',',
-                                               skip_header=True, unpack=True)
-        wavelength = wavelength * u.nm
-        irradiance = irradiance * u.W / u.m**2 / u.nm
-        radiance = irradiance / (np.pi * u.sr)
-        photon_energy = c.c * c.h / wavelength / u.photon
-        brightness = radiance / photon_energy
-        return wavelength.to(u.nm), brightness.to(u.R / u.nm)
-
     @staticmethod
     def _get_jupiter_meridian_reflectivity() -> (u.Quantity, u.Quantity):
         """
@@ -81,7 +83,7 @@ class _FluxCalibration:
         and multiply them.
         """
         wavelength, reflectivity = self._get_jupiter_meridian_reflectivity()
-        _, brightness = self._get_solar_spectral_brightness()
+        _, brightness = _get_solar_spectral_brightness()
         jupiter_brightness = reflectivity * brightness
         eph = _get_ephemeris(target='Jupiter', time=time, location='@10')
         distance = eph['delta'].value[0] * eph['delta'].unit
@@ -160,7 +162,9 @@ class _FluxCalibration:
         return {'calibration_factors': calibration_factor,
                 'calibration_factors_unc': calibration_factor_unc}
 
-    def calibrate(self, data: u.Quantity, unc: u.Quantity,
+    def calibrate(self,
+                  data: u.Quantity,
+                  unc: u.Quantity,
                   target_size: u.Quantity) -> (u.Quantity, u.Quantity):
         """
         Wrapper function to calibrate data and uncertainty arrays from
