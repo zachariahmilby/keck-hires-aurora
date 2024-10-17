@@ -34,7 +34,8 @@ class _Background:
                  radius: float,
                  spatial_scale: float,
                  spectral_scale: float,
-                 allow_doppler_shift: bool):
+                 allow_doppler_shift: bool,
+                 fit_skyline: bool = True):
         """
         Parameters
         ----------
@@ -70,7 +71,8 @@ class _Background:
         self._background_unc_1d = np.zeros(self._data_2d.shape[1])
         self._sky_line = np.zeros(self._data_2d.shape)
         self._profile = self._get_background_profile()
-        self._remove_skyline()
+        if fit_skyline:
+            self._remove_skyline()
         self._fit_2d_background()
 
     @staticmethod
@@ -124,7 +126,7 @@ class _Background:
         """
         model = Model(self._doppler_fit_function,
                       independent_vars=['background', 'wavelengths'])
-        model.set_param_hint('coeff', min=0)
+        # model.set_param_hint('coeff', min=0)
         if self._allow_doppler_shift:
             model.set_param_hint('velocity', min=-velocity_limit,
                                  max=velocity_limit)
@@ -361,7 +363,7 @@ class _Background:
                                 ~np.isnan(shifted_profile))[0]
                 if len(good) > 0:
                     fit = model.fit(
-                        data[good], params=params, weights=weights[good],
+                        data[good], params=params,
                         background=shifted_profile[good])
                     background[i] = fit.eval(
                         background=shifted_profile)

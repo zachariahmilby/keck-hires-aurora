@@ -150,4 +150,4 @@ class _Mask:
 
     @property
     def aperture_size_pix(self) -> int:
-        return np.where(np.isnan(self._masks['target_mask'].flatten()))[0].size
+        return np.count_nonzero(np.isnan(self._masks['target_mask']))
