@@ -35,6 +35,7 @@ class _Background:
                  spatial_scale: float,
                  spectral_scale: float,
                  allow_doppler_shift: bool,
+                 smooth: bool = False,
                  fit_skyline: bool = True):
         """
         Parameters
@@ -64,6 +65,7 @@ class _Background:
         self._spatial_scale = spatial_scale
         self._spectral_scale = spectral_scale
         self._allow_doppler_shift = allow_doppler_shift
+        self._smooth = smooth
         self._nspa, self._nspe = self._data_2d.shape
         self._background_2d = np.zeros(self._data_2d.shape)
         self._background_unc_2d = np.zeros(self._data_2d.shape)
@@ -126,7 +128,6 @@ class _Background:
         """
         model = Model(self._doppler_fit_function,
                       independent_vars=['background', 'wavelengths'])
-        # model.set_param_hint('coeff', min=0)
         if self._allow_doppler_shift:
             model.set_param_hint('velocity', min=-velocity_limit,
                                  max=velocity_limit)
@@ -236,15 +237,45 @@ class _Background:
                     try:
                         fit = model.fit(median_background[s_], params,
                                         x=x[s_])  # noqa
-                        sky_line = fit.eval_components(x=x)['rectangle']
+                        try:
+                            amplitude = fit.params['amplitude'].value
+                            amplitude_err = fit.params['amplitude'].stderr
+                            amplitude_snr = amplitude / amplitude_err
+                            center1 = fit.params['center1'].value
+                            center1_err = fit.params['center1'].stderr
+                            center1_snr = center1 / center1_err
+                            center2 = fit.params['center2'].value
+                            center2_err = fit.params['center2'].stderr
+                            center2_snr = center2 / center2_err
+                            sigma1 = fit.params['sigma1'].value
+                            sigma1_err = fit.params['sigma1'].stderr
+                            sigma1_snr = sigma1 / sigma1_err
+                            sigma2 = fit.params['sigma2'].value
+                            sigma2_err = fit.params['sigma2'].stderr
+                            sigma2_snr = sigma2 / sigma2_err
+                            if ((amplitude_snr < 1) or (center1_snr < 1) or
+                                (center2_snr < 1) or (sigma1_snr < 1) or
+                                (sigma2_snr < 1)):
+                                continue
+                            else:
+                                sky_line = fit.eval_components(x=x)['rectangle']
+                        except TypeError:
+                            continue
                     except RuntimeWarning:
                         continue
         median_background -= sky_line
-        smoothed_background = convolve(
-            median_background, _slit_kernel(self._slit_width_bins),
-            boundary='extend')
-        normalized_background = (smoothed_background /
-                                 np.nanmax(smoothed_background))
+
+        # smooth background if fewer than 3 rows were used to make it or
+        # explicitly called for
+        if (len(other_rows) < 3) or self._smooth:
+            smoothed_background = convolve(
+                median_background, _slit_kernel(self._slit_width_bins),
+                boundary='extend')
+            normalized_background = (smoothed_background /
+                                     np.nanmax(smoothed_background))
+        else:
+            normalized_background = (median_background /
+                                     np.nanmax(median_background))
         return normalized_background
 
     @staticmethod
@@ -321,7 +352,8 @@ class _Background:
                     data_arr=masked_data, ind=x).reshape(masked_data.shape)
                 self._sky_line = best_fit_image
 
-    def _fit_row_background(self, mask_skyline: bool) -> None:
+    def _fit_row_background(self,
+                            mask_skyline: bool) -> None:
         """
         Fit background row by row. If fit_skyline is True, remove the sky line
         from the background template. If mask_skyline is True, mask out the
@@ -365,9 +397,9 @@ class _Background:
                     fit = model.fit(
                         data[good], params=params,
                         background=shifted_profile[good])
-                    background[i] = fit.eval(
+                    background[i] += fit.eval(
                         background=shifted_profile)
-                    background_uncertainty[i] = fit.eval_uncertainty(
+                    background_uncertainty[i] += fit.eval_uncertainty(
                         background=shifted_profile)
 
         for col in range(background.shape[1]):

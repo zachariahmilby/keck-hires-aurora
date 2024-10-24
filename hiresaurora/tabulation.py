@@ -11,7 +11,7 @@ from astropy.time import Time
 from hiresaurora.general import AuroraLines, FuzzyQuantity
 
 # noinspection PyProtectedMember
-weird_error = np.core._exceptions._UFuncNoLoopError
+weird_error = np.core._exceptions._UFuncNoLoopError  # noqa
 
 
 class TabulatedResults:
@@ -24,7 +24,9 @@ class TabulatedResults:
                      '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
                      '⁺': '+', '⁻': '-'}
 
-    def __init__(self, calibrated_data_path: str or Path, excluded: [int],
+    def __init__(self,
+                 calibrated_data_path: str or Path,
+                 excluded: list[int] or dict[str, list[int]],
                  extended: bool):
         """
         Parameters
@@ -32,7 +34,7 @@ class TabulatedResults:
         calibrated_data_path : str or Path
             File path to directory containing wavelength-specific
             subdirectories with calibrated data files.
-        excluded : [int]
+        excluded : list[int] or dict[str, list[int]]
             Indices of observations excluded from averaging.
         extended : bool
             Whether or not the pipeline used the extended Io line list.
@@ -46,10 +48,10 @@ class TabulatedResults:
         Save a color-coded summary table.
         """
         columns = [s for s in results.columns
-                   if s not in ['Observation Time', 'Excluded from Averaging',
+                   if s not in ['Observation Time',
                                 'Distance from Plasma Sheet Equator [R_J]']]
-        columnlabels = np.array([s for s in columns[0::2]])
-        columns = np.array([s.replace(' [R]', '') for s in columns[0::2]])
+        columnlabels = np.array([s for s in columns[0::3]])
+        columns = np.array([s.replace(' [R]', '') for s in columns[0::3]])
         rows = results['Observation Time'].to_numpy(dtype=str)
         rowlabels = [Time(t, format='isot').to_datetime().strftime('%H:%M:%S')
                      for t in rows[:-2]]
@@ -60,10 +62,11 @@ class TabulatedResults:
         excluded = np.zeros((rows.size, columns.size), dtype=bool)
         for i, row in enumerate(rows):
             subresult = results[results['Observation Time'] == row]
-            if i < rows.size - 1:
-                excluded[i] = \
-                    subresult['Excluded from Averaging'].to_numpy(dtype=bool)
             for j, column in enumerate(columns):
+                if i < rows.size - 2:
+                    excluded[i] = \
+                        ~subresult[f'{column} Included in Avg.'].to_numpy(
+                            dtype=bool)
                 brightness = subresult[f'{column} [R]'].to_numpy()[0]
                 try:
                     uncertainty = subresult[f'{column} Unc. [R]'].to_numpy()[0]
@@ -79,7 +82,8 @@ class TabulatedResults:
                     label = f'${label}$'
                     data[i, j] = label
                     try:
-                        snr = fuzz.value / fuzz.uncertainty
+                        snr = (float(fuzz.value_formatted) /
+                               float(fuzz.uncertainty_formatted))
                     except ZeroDivisionError:
                         snr = np.nan
                     if snr >= 2.0:
@@ -149,10 +153,10 @@ class TabulatedResults:
         distances = results[key].to_numpy()
         distances = np.insert(distances, -1, distances[-1])
         new_data[key] = distances
-        s_ = np.where(
-            results['Excluded from Averaging'].to_numpy()[:-1] == 0)[0]
         for name in self._aurora_lines.names:
             try:
+                s_ = np.where(
+                    results[f'{name} Included in Avg.'].to_numpy()[:-1])[0]
                 brightnesses = results[f'{name} [R]'].to_numpy()
                 uncertainties = results[f'{name} Unc. [R]'].to_numpy()
                 weights = 1 / (uncertainties ** 2)
@@ -175,10 +179,10 @@ class TabulatedResults:
                     new_data[f'{name} Unc. [R]'] = np.round(uncertainties, 4)
                 except TypeError:
                     new_data[f'{name} Unc. [R]'] = uncertainties
+                new_data[f'{name} Included in Avg.'] = np.insert(
+                    results[f'{name} Included in Avg.'].to_numpy(), -1, False)
             except KeyError:
                 continue
-        new_data['Excluded from Averaging'] = np.insert(
-            results['Excluded from Averaging'].to_numpy(), -1, 0)
         return new_data
 
     def run(self):
@@ -187,7 +191,6 @@ class TabulatedResults:
         """
         savename = Path(self._calibrated_data_path, 'results.csv')
         results = pd.DataFrame()
-        excluded = None
         for name in self._aurora_lines.names:
             directory = Path(self._calibrated_data_path, name)
             files = sorted(directory.glob('*.fits.gz'))
@@ -197,8 +200,24 @@ class TabulatedResults:
             brightnesses = []
             uncertainties = []
             distances = []
-            if excluded is None:
-                excluded = np.zeros(len(files)).astype(bool)
+
+            excluded = np.zeros(len(files)).astype(bool)
+            if isinstance(self._excluded, list):
+                excluded[np.array(self._excluded)] = True
+            elif isinstance(self._excluded, dict):
+                if ('all' in self._excluded.keys()) & (name in self._excluded.keys()):
+                    ind = np.intersect1d(self._excluded[name],
+                                         self._excluded['all'])
+                elif 'all' in self._excluded.keys():
+                    ind = self._excluded['all']
+                elif name in self._excluded.keys():
+                    ind = self._excluded[name]
+                else:
+                    ind = []
+                try:
+                    excluded[np.array(ind)] = True
+                except IndexError:
+                    pass
             for i, file in enumerate(files):
                 with fits.open(file) as hdul:
                     primary_header = hdul['PRIMARY'].header
@@ -215,22 +234,17 @@ class TabulatedResults:
                     brightnesses.append(brightness)
                     uncertainties.append(uncertainty)
                     distances.append(distance)
-                if self._excluded is not None:
-                    if i in self._excluded:
-                        excluded[i] = True
-                    if file.name == 'average.fits.gz':
-                        excluded[i] = True
             distances = np.array(distances)
             distances[np.where(np.isnan(distances))] = np.nanmean(distances)
             distances = np.round(distances, 4)
+            excluded[-1] = True
             results['Observation Time'] = times
             results['Distance from Plasma Sheet Equator [R_J]'] = distances
             results[f'{name} [R]'] = brightnesses
             results[f'{name} Unc. [R]'] = uncertainties
-        results['Excluded from Averaging'] = excluded
+            results[f'{name} Included in Avg.'] = np.logical_not(np.array(excluded), dtype=bool)
         results = self._calculate_averages_of_individuals(results=results)
         results.to_csv(savename, index=False, sep=',')
-        self._excluded = excluded
         self._make_mpl_table(results=results)
 
 

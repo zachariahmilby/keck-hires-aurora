@@ -168,16 +168,17 @@ _emission_lines = {
         species='O I', ratios=[1, 0.352941/0.294118, 0.352941/0.294118]),
     '872.7 nm [C I]': _EmissionLine(wavelengths=[872.7131] * u.nm,
                                     species='[C I]'),
-    '921.3 nm S I': _EmissionLine(wavelengths=[921.2865] * u.nm,
-                                  species='S I'),
-    '922.8 nm S I': _EmissionLine(wavelengths=[922.8092] * u.nm,
-                                  species='S I'),
-    '923.8 nm S I': _EmissionLine(wavelengths=[923.7538] * u.nm,
-                                  species='S I'),
+    '922.3 nm S I': _EmissionLine(
+        wavelengths=[921.2865, 922.8092, 923.7538] * u.nm, species='S I',
+        ratios=[1, 100/150, 80/150]),
 }
 
-icy_satellite_lines = ['557.7 nm [O I]', '630.0 nm [O I]', '636.4 nm [O I]',
-                       '656.3 nm H I', '777.4 nm O I', '844.6 nm O I']
+icy_satellite_lines = ['557.7 nm [O I]',
+                       '630.0 nm [O I]',
+                       '636.4 nm [O I]',
+                       '656.3 nm H I',
+                       '777.4 nm O I',
+                       '844.6 nm O I']
 
 
 class AuroraLines:

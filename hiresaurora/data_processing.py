@@ -43,7 +43,7 @@ def _fit_trace(data: u.Quantity or np.ndarray,
             if isinstance(data, u.Quantity):
                 column = column.value
                 weights = weights.value
-            good = ~np.isnan(column)
+            good = np.where(~np.isnan(column))[0]
             if len(good) < data.shape[0] - 3:  # skip if more than 3 NaNs
                 continue
             try:
@@ -255,9 +255,11 @@ class _LineData:
     def __init__(self,
                  reduced_data_directory: str or Path,
                  aperture_radius: u.Quantity,
+                 average_aperture_scale: float,
                  trim_top: int = 2,
                  trim_bottom: int = 2,
-                 systematic_trace_offset: float = 0.0,
+                 systematic_trace_offset: dict or int or float = 0.0,
+                 horizontal_offset: float = 0.0,
                  doppler_shift_background: bool = False):
         """
         Parameters
@@ -278,9 +280,11 @@ class _LineData:
         """
         self._reduced_data_directory = Path(reduced_data_directory)
         self._aperture_radius = aperture_radius.to(u.arcsec)
+        self._average_aperture_scale = average_aperture_scale
         self._trim_top = trim_top
         self._trim_bottom = trim_bottom
         self._systematic_trace_offset = systematic_trace_offset
+        self._horizontal_offset = horizontal_offset
         self._doppler_shift_background = doppler_shift_background
         self._data = _RawData(self._reduced_data_directory)
         self._save_directory = self._parse_save_directory()
@@ -330,8 +334,8 @@ class _LineData:
         edge_slice = np.s_[self._trim_bottom:-self._trim_top, left:right+1]
         return data_slice, edge_slice
 
-    @staticmethod
-    def _get_line_indices(wavelengths: u.Quantity,
+    def _get_line_indices(self,
+                          wavelengths: u.Quantity,
                           line_wavelengths: u.Quantity) -> [float]:
         """
         Get fractional pixel indices corresponding to emission line locations.
@@ -342,7 +346,8 @@ class _LineData:
         fit = model.fit(pixels, params, x=wavelengths.value)
         indices = []
         for wavelength in line_wavelengths:
-            indices.append(fit.eval(x=wavelength.value))
+            indices.append(fit.eval(x=wavelength.value) +
+                           self._horizontal_offset)
         return indices
 
     @staticmethod
@@ -785,14 +790,15 @@ class _LineData:
         dwavelength = np.gradient(shifted_wavelengths.value)
         center = np.abs(shifted_wavelengths - line_wavelengths[0]).argmin()
         sigma = angular_width.value * dwavelength[center] / 2.35482
+        seeing = 0.5 * dwavelength[center] / 2.35482
 
         model = GaussianModel(prefix='peak0_')
         model.set_param_hint(
             'peak0_center',
-            min=line_wavelengths.value[0]-sigma,
-            max=line_wavelengths.value[0]+sigma)
+            min=line_wavelengths.value[0]-2*sigma,
+            max=line_wavelengths.value[0]+2*sigma)
         model.set_param_hint('peak0_amplitude')
-        model.set_param_hint('peak0_sigma', min=0.75*sigma, max=1.25*sigma)
+        model.set_param_hint('peak0_sigma', min=sigma, max=sigma+seeing)
         params = model.make_params(
             center=line_wavelengths.value[0],
             amplitude=10*spectrum.value[center]*dwavelength[center],
@@ -857,6 +863,7 @@ class _LineData:
             unc = np.sqrt(unc**2 + fit_unc**2)
         # if brightness < 0:
         #     brightness = 0
+        #     unc = np.nanstd(fit.data - fit.best_fit) * np.mean(dwavelength)
         return brightness * u.R, unc * u.R
 
     @staticmethod
@@ -897,7 +904,8 @@ class _LineData:
             line_wavelengths: u.Quantity,
             line_name: str,
             line_ratio: list[float],
-            exclude: list[int] or dict[str, list[int]] or None):
+            exclude: list[int] or dict[str, list[int]] or None,
+            smooth: bool):
         """
         Process all individual observations for a set of lines (singlet or
         multiplet).
@@ -921,7 +929,11 @@ class _LineData:
         if exclude is None:
             exclude = []
         elif exclude is dict:
-            exclude = exclude[line_name]
+            if 'all' in exclude.keys():
+                exclude = np.intersect1d(exclude[line_name], exclude['all'])
+            else:
+                exclude = exclude[line_name]
+
         order = self._data.find_order_with_wavelength(line_wavelengths)
         select, select_edges = self._get_data_slice(order, line_wavelengths)
         spatial_scale = self._data.science[0].data_header['SPASCALE']
@@ -943,13 +955,23 @@ class _LineData:
         shifted_wavelength_edge_selection = (
             self._data.science[0].doppler_shifted_wavelength_edges[order]
             [select_edges[1]])
-        horizontal_positions = self._get_line_indices(
-            wavelengths=shifted_wavelength_selection,
-            line_wavelengths=line_wavelengths)
+        try:
+            horizontal_positions = self._get_line_indices(
+                wavelengths=shifted_wavelength_selection,
+                line_wavelengths=line_wavelengths)
+        except TypeError:
+            return
         n_traces = len(self._data.trace)
         n_science = len(self._data.science)
         trace_align_average = True
         first_trace_center = None
+        if isinstance(self._systematic_trace_offset, dict):
+            try:
+                trace_offset = self._systematic_trace_offset[line_name]
+            except KeyError:
+                trace_offset = 0.0
+        else:
+            trace_offset = self._systematic_trace_offset
         if n_traces != n_science:
             msg = (f"      Warning! The number of trace images ({n_traces}) "
                    f"doesn't match the number of science images ({n_science})."
@@ -967,6 +989,7 @@ class _LineData:
         individual_traces = []
         satellite_radii = []
         satellite_sizes = []
+
         for i, (data, trace) in enumerate(zip(self._data.science, traces)):
             geometry = Geometry(target=data.data_header['TARGET'],
                                 observation_time=data.data_header['DATE-OBS'])
@@ -981,13 +1004,18 @@ class _LineData:
             try:
                 trace_fit, trace_fit_unc = _fit_trace(
                     trace_data_selection, trace_unc_selection)
-                trace_fit = trace_fit + self._systematic_trace_offset
+                if isinstance(trace_offset, list):
+                    trace_offset_select = trace_offset[i]
+                else:
+                    trace_offset_select = trace_offset
+                trace_fit = trace_fit + trace_offset_select
                 if first_trace_center is None:
                     first_trace_center = trace_fit
             except TraceFitError:
                 trace_fit = 'error'
                 trace_fit_unc = 'error'
-            mask = _Mask(data=data_selection, trace_center=trace_fit,
+            mask = _Mask(data=data_selection,
+                         trace_center=trace_fit,
                          horizontal_positions=horizontal_positions,
                          spatial_scale=spatial_scale,
                          spectral_scale=spectral_scale,
@@ -998,18 +1026,22 @@ class _LineData:
                 data_selection, unc_selection,
                 target_size=mask.satellite_size)
 
-            calibrated_background = _Background(
-                data_2d=calibrated_data_2d,
-                uncertainty_2d=calibrated_unc_2d,
-                rest_wavelengths=rest_wavelength_selection,
-                shifted_wavelength_centers=shifted_wavelength_selection,
-                shifted_wavelength_edges=shifted_wavelength_edge_selection,
-                slit_width_bins=slit_width_bins,
-                mask=mask,
-                radius=mask.aperture_radius.value,
-                spectral_scale=spectral_scale,
-                spatial_scale=spatial_scale,
-                allow_doppler_shift=self._doppler_shift_background)
+            try:
+                calibrated_background = _Background(
+                    data_2d=calibrated_data_2d,
+                    uncertainty_2d=calibrated_unc_2d,
+                    rest_wavelengths=rest_wavelength_selection,
+                    shifted_wavelength_centers=shifted_wavelength_selection,
+                    shifted_wavelength_edges=shifted_wavelength_edge_selection,
+                    slit_width_bins=slit_width_bins,
+                    mask=mask,
+                    radius=mask.aperture_radius.value,
+                    spectral_scale=spectral_scale,
+                    spatial_scale=spatial_scale,
+                    allow_doppler_shift=self._doppler_shift_background,
+                    smooth=smooth)
+            except ValueError:
+                return  # break out if unable to calculate background
 
             if i not in exclude:
                 individual_data_2d.append(calibrated_background.data_2d -
@@ -1096,22 +1128,25 @@ class _LineData:
                      horizontal_positions=horizontal_positions,
                      spatial_scale=spatial_scale,
                      spectral_scale=spectral_scale,
-                     aperture_radius=self._aperture_radius,
+                     aperture_radius=self._aperture_radius*self._average_aperture_scale,
                      satellite_radius=satellite_radius)
 
-        calibrated_background = _Background(
-            data_2d=average_data_2d,
-            uncertainty_2d=average_unc_2d,
-            rest_wavelengths=rest_wavelength_selection,
-            shifted_wavelength_centers=shifted_wavelength_selection,
-            shifted_wavelength_edges=shifted_wavelength_edge_selection,
-            slit_width_bins=slit_width_bins,
-            mask=mask,
-            radius=mask.aperture_radius.value,
-            spectral_scale=spectral_scale,
-            spatial_scale=spatial_scale,
-            allow_doppler_shift=self._doppler_shift_background,
-            fit_skyline=False)
+        try:
+            calibrated_background = _Background(
+                data_2d=average_data_2d,
+                uncertainty_2d=average_unc_2d,
+                rest_wavelengths=rest_wavelength_selection,
+                shifted_wavelength_centers=shifted_wavelength_selection,
+                shifted_wavelength_edges=shifted_wavelength_edge_selection,
+                slit_width_bins=slit_width_bins,
+                mask=mask,
+                radius=mask.aperture_radius.value,
+                spectral_scale=spectral_scale,
+                spatial_scale=spatial_scale,
+                allow_doppler_shift=self._doppler_shift_background,
+                smooth=smooth)
+        except ValueError:
+            return
 
         calibrated_data_1d, calibrated_unc_1d = self._get_data_1d(
             calibrated_background.bg_sub_data_2d,
@@ -1165,10 +1200,13 @@ def calibrate_data(reduced_data_directory: str or Path,
                    trim_bottom: int,
                    trim_top: int,
                    aperture_radius: u.Quantity,
+                   average_aperture_scale: float,
                    exclude: [int] = None,
                    skip: [str] = None,
-                   systematic_trace_offset: float = 0.0,
-                   doppler_shift_background: bool = False):
+                   systematic_trace_offset: dict or int or float = 0.0,
+                   horizontal_offset: float = 0.0,
+                   doppler_shift_background: bool = False,
+                   smooth: list[str] = None):
     """
     This function runs the aurora data calibration pipeline for all wavelengths
     (default O and H or extended Io set).
@@ -1199,6 +1237,8 @@ def calibrate_data(reduced_data_directory: str or Path,
     """
     if skip is None:
         skip = []
+    if smooth is None:
+        smooth = []
     aurora_lines = AuroraLines(extended=extended)
     log_path = Path(reduced_data_directory.parent, 'calibrated')
     if not log_path.exists():
@@ -1207,7 +1247,9 @@ def calibrate_data(reduced_data_directory: str or Path,
                           trim_top=trim_top,
                           trim_bottom=trim_bottom,
                           aperture_radius=aperture_radius,
+                          average_aperture_scale=average_aperture_scale,
                           systematic_trace_offset=systematic_trace_offset,
+                          horizontal_offset=horizontal_offset,
                           doppler_shift_background=doppler_shift_background)
 
     lines = aurora_lines.wavelengths
@@ -1220,10 +1262,14 @@ def calibrate_data(reduced_data_directory: str or Path,
             continue
         _log(log_path, f'   Calibrating {name} data...')
         try:
+            smooth_bg = False
+            if name in smooth:
+                smooth_bg = True
             line_data.run(line_wavelengths=wavelength,
                           line_name=name,
                           line_ratio=ratio,
-                          exclude=exclude)
+                          exclude=exclude,
+                          smooth=smooth_bg)
         except WavelengthNotFoundError:
             _log(log_path,
                  f'      {name} not captured by HIRES setup! Skipping...')

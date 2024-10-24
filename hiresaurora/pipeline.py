@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 
 import astropy.units as u
+from dask.array import average
 
 from hiresaurora.data_processing import calibrate_data
 from hiresaurora.general import _log, _make_log
@@ -15,8 +16,10 @@ class AuroraPipeline:
                  extended: bool = False,
                  exclude_from_averaging: [int] = None,
                  skip: [str] = None,
-                 systematic_trace_offset: float = 0.0,
-                 doppler_shift_background: bool = True):
+                 systematic_trace_offset: dict or int or float = 0.0,
+                 horizontal_offset: float = 0.0,
+                 doppler_shift_background: bool = True,
+                 smooth: [str] = None):
         """
         Parameters
         ----------
@@ -35,7 +38,9 @@ class AuroraPipeline:
         self._exclude = exclude_from_averaging
         self._skip = skip
         self._systematic_trace_offset = systematic_trace_offset
+        self._horizontal_offset = horizontal_offset
         self._doppler_shift_background = doppler_shift_background
+        self._smooth = smooth
         self._calibrated_data_directory = \
             self._parse_calibrated_data_directory()
 
@@ -64,7 +69,8 @@ class AuroraPipeline:
     def run(self,
             trim_bottom: int,
             trim_top: int,
-            aperture_radius: u.Quantity) -> None:
+            aperture_radius: u.Quantity,
+            average_aperture_scale: float = 1.0) -> None:
         """
         Run the aurora pipeline.
 
@@ -94,12 +100,17 @@ class AuroraPipeline:
         _log(log_path, f'Running aurora calibration pipeline for {dataset}...')
         calibrate_data(
             reduced_data_directory=self._reduced_data_directory,
-            extended=self._extended, trim_bottom=trim_bottom,
-            trim_top=trim_top, aperture_radius=aperture_radius,
+            extended=self._extended,
+            trim_bottom=trim_bottom,
+            trim_top=trim_top,
+            aperture_radius=aperture_radius,
+            average_aperture_scale=average_aperture_scale,
             exclude=self._exclude,
             skip=self._skip,
             systematic_trace_offset=self._systematic_trace_offset,
-            doppler_shift_background=self._doppler_shift_background)
+            horizontal_offset=self._horizontal_offset,
+            doppler_shift_background=self._doppler_shift_background,
+            smooth=self._smooth)
         self.summarize()
         elapsed_time = datetime.now() - t0
         _log(log_path, f'Calibration complete, time elapsed: {elapsed_time}.')

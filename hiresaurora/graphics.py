@@ -34,6 +34,9 @@ def _place_colorbar(img: plt.cm.ScalarMappable, cax: plt.Axes):
     Place a colorbar and label it with units.
     """
     plt.colorbar(img, cax=cax, label=r'R nm$^{-1}$')
+    cax.ticklabel_format(axis='y', style='sci', scilimits=(-2, 3))
+    cax.yaxis.set_major_locator(ticker.AutoLocator())
+    cax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
 
 
 def _place_label(label: str, axis: plt.Axes):
@@ -118,8 +121,8 @@ def make_quicklook(file_path: Path):
             hdul['WAVELENGTH_CENTERS_SHIFTED'].data, x, deg=3))
         wavelength_axis = axes[-1].secondary_xaxis(
             'bottom', functions=(pixel2wavelength, wavelength2pixel))
-        wavelength_axis.xaxis.set_major_locator(ticker.MultipleLocator(0.1))
-        wavelength_axis.xaxis.set_minor_locator(ticker.MultipleLocator(0.02))
+        # wavelength_axis.xaxis.set_major_locator(ticker.MultipleLocator(0.1))
+        wavelength_axis.xaxis.set_minor_locator(ticker.AutoMinorLocator())
         wavelength_axis.set_xlabel('Doppler-Shifted Wavelength [nm]')
 
         emission_lines = hdul['TARGETED_LINES'].data
@@ -166,12 +169,13 @@ def make_quicklook(file_path: Path):
             np.arange(data.shape[1]) * spescale,
             hdul['BEST_FIT_1D'].data - hdul['BEST_FIT_1D_unc'].data,
             hdul['BEST_FIT_1D'].data + hdul['BEST_FIT_1D_unc'].data,
-            color='#D62728', alpha=0.25, zorder=3)
+            color='#D62728', alpha=0.5, linewidth=0, zorder=3)
         label = fr'Best-fit brightness: ${fuzz.latex}$ R'
         axes[3].annotate(label, xy=(0, 1), xytext=(3, -3),
                          xycoords='axes fraction', textcoords='offset points',
                          ha='left', va='top')
         axes[3].set_ylabel(r'R nm$^{-1}$')
+        axes[3].ticklabel_format(axis='y', style='sci', scilimits=(-2, 3))
 
         [axis.set_aspect('equal') for axis in axes[:3]]
 
