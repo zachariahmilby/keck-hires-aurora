@@ -5,17 +5,16 @@ from astropy.table import MaskedColumn
 from astropy.time import Time
 
 from hiresaurora.ephemeris import _get_ephemeris
-from hiresaurora.general import naif_codes
-
-# noinspection PyUnresolvedReferences
-rJ = u.def_unit('R_J', represents=const.R_jup)
+from hiresaurora.general import naif_codes, rJ
 
 
 class Geometry:
     """
     Class to calcualte observing geometry and plasma-sheet distances.
     """
-    def __init__(self, target: str, observation_time: str or Time):
+    def __init__(self,
+                 target: str,
+                 observation_time: str or Time):
         """
         Parameters
         ----------
@@ -52,7 +51,8 @@ class Geometry:
     # noinspection PyUnresolvedReferences
     @staticmethod
     def _centrifugal_equator_latitude(
-            r: u.Quantity, lon: u.Quantity = 159 * u.degree) -> u.Quantity:
+            r: u.Quantity,
+            lon: u.Quantity = 159*u.degree) -> u.Quantity:
         """
         Phipps and Bagenal (2021) equation (2). Returns centrifugal equator
         latitude in degrees.
@@ -69,7 +69,9 @@ class Geometry:
         return ((a * np.tanh(b * (r / const.R_jup).value - c) + d) * np.sin(
             lon - e)).to(u.degree)
 
-    def _convert_to_height(self, r: u.Quantity, lon: u.Quantity) -> u.Quantity:
+    def _convert_to_height(self,
+                           r: u.Quantity,
+                           lon: u.Quantity) -> u.Quantity:
         """
         Calculate height above or below centrifugal equator in Jupiter radii
         using minimum distance.
@@ -89,8 +91,8 @@ class Geometry:
         return 360 * u.degree - lon.to(u.degree)
 
     @staticmethod
-    def _convert_to_quantity(
-            quantity: MaskedColumn, si: bool = True) -> u.Quantity:
+    def _convert_to_quantity(quantity: MaskedColumn,
+                             si: bool = True) -> u.Quantity:
         """
         Convert Horizons ephemeris output to a single astropy quantity with
         units. By default it will also convert to SI units.
@@ -114,8 +116,8 @@ class Geometry:
         return self._observation_time - dt
 
     @staticmethod
-    def _convert_to_magnetic_latitude(
-            latitude: u.Quantity, longitude: u.Quantity) -> u.Quantity:
+    def _convert_to_magnetic_latitude(latitude: u.Quantity,
+                                      longitude: u.Quantity) -> u.Quantity:
         return 9.5 * u.degree * np.cos(longitude - 159 * u.degree) - latitude
 
     def _get_subjovian_coordinates(self) -> dict:

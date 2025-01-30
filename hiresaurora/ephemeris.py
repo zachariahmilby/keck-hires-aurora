@@ -5,7 +5,8 @@ from astroquery.jplhorizons import Horizons
 from hiresaurora.general import naif_codes
 
 
-def _horizons_query(target: str, epochs: float or dict,
+def _horizons_query(target: str,
+                    epochs: float or dict,
                     location: str = naif_codes['Maunakea'],
                     airmass_lessthan: int | float | None = 2,
                     skip_daylight: bool = False) -> dict:
@@ -20,7 +21,8 @@ def _horizons_query(target: str, epochs: float or dict,
                                skip_daylight=skip_daylight)
 
 
-def _get_ephemeris(target: str, time: Time or str,
+def _get_ephemeris(target: str,
+                   time: Time or str,
                    location: str = naif_codes['Maunakea'],
                    airmass_lessthan: int | float | None = 3,
                    skip_daylight: bool = False) -> dict:
@@ -33,8 +35,11 @@ def _get_ephemeris(target: str, time: Time or str,
                            skip_daylight=skip_daylight)
 
 
-def _get_ephemerides(target: str, starting_datetime: str, ending_datetime: str,
-                     step: str = '1m', location: str = naif_codes['Maunakea'],
+def _get_ephemerides(target: str,
+                     starting_datetime: str,
+                     ending_datetime: str,
+                     step: str = '1m',
+                     location: str = naif_codes['Maunakea'],
                      airmass_lessthan: int | float | None = 3,
                      skip_daylight: bool = False) -> dict:
     """

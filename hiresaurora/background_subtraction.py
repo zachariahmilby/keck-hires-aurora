@@ -27,16 +27,12 @@ class _Background:
                  data_2d: u.Quantity,
                  uncertainty_2d: u.Quantity,
                  rest_wavelengths: u.Quantity,
-                 shifted_wavelength_centers: u.Quantity,
-                 shifted_wavelength_edges: u.Quantity,
                  slit_width_bins: float,
                  mask: _Mask,
-                 radius: float,
-                 spatial_scale: float,
-                 spectral_scale: float,
                  allow_doppler_shift: bool,
                  smooth: bool = False,
-                 fit_skyline: bool = True):
+                 fit_skyline: bool = True,
+                 run_fit: bool = True):
         """
         Parameters
         ----------
@@ -44,26 +40,30 @@ class _Background:
             The raw 2D data.
         uncertainty_2d : u.Quantity
             The raw 2D data uncertainty.
+        rest_wavelengths : u.Quantity
+            Rest wavelength centers.
+        slit_width_bins : float
+            Width of slit in detector bins (pixels).
         mask : np.ndarray
             The target mask (an array of ones and NaNs).
-        spatial_scale : float
-            The spatial pixel scale (probably in [arcsec/bin], but it doesn't
-            matter so long as it's the same units as the spectral scale).
-        spectral_scale : float
-            The spectral pixel scale (probably in [arcsec/bin], but it doesn't
-            matter so long as it's the same units as the spatial scale).
+        allow_doppler_shift : bool
+            Whether or not to allow the template to be Doppler shifted. For low
+            SNR data allowing Doppler shifting might be more trouble than it's
+            worth.
+        smooth : bool
+            Whether or not to smooth the fit template constructed from
+            averaging the rows without the satellite spectrum.
+        fit_skyline : bool
+            Whether or not to fit known sky lines (see list in general.py).
+        run_fit : bool
+            Whether or not to calculate a best-fit background. Default is True.
         """
         self._data_2d = data_2d.value
         self._uncertainty_2d = uncertainty_2d.value
         self._rest_wavelengths = rest_wavelengths
-        self._shifted_wavelength_centers = shifted_wavelength_centers
-        self._shifted_wavelength_edges = shifted_wavelength_edges
         self._slit_width_bins = slit_width_bins
         self._unit = data_2d.unit
         self._mask = mask
-        self._radius = radius
-        self._spatial_scale = spatial_scale
-        self._spectral_scale = spectral_scale
         self._allow_doppler_shift = allow_doppler_shift
         self._smooth = smooth
         self._nspa, self._nspe = self._data_2d.shape
@@ -72,10 +72,12 @@ class _Background:
         self._background_1d = np.zeros(self._data_2d.shape[1])
         self._background_unc_1d = np.zeros(self._data_2d.shape[1])
         self._sky_line = np.zeros(self._data_2d.shape)
+        self._run_fit = run_fit
         self._profile = self._get_background_profile()
         if fit_skyline:
             self._remove_skyline()
-        self._fit_2d_background()
+        if run_fit:
+            self._fit_2d_background()
 
     @staticmethod
     def _background_fit_function(background: np.ndarray,
@@ -122,14 +124,16 @@ class _Background:
             background, wavelengths, velocity)
         return shifted_background * coeff + const
 
-    def _doppler_fit_model(self, velocity_limit: float = 10) -> Model:
+    def _doppler_fit_model(self,
+                           velocity_limit: float = 10) -> Model:
         """
         Lmfit background template fitting model.
         """
         model = Model(self._doppler_fit_function,
                       independent_vars=['background', 'wavelengths'])
         if self._allow_doppler_shift:
-            model.set_param_hint('velocity', min=-velocity_limit,
+            model.set_param_hint('velocity',
+                                 min=-velocity_limit,
                                  max=velocity_limit)
         else:
             model.set_param_hint('velocity', value=0.0, vary=False)
@@ -144,13 +148,17 @@ class _Background:
         Used for aligning individual rows when constructing a master template.
         """
         model = self._doppler_fit_model()
-        params = model.make_params(
-            coeff=np.max(data), velocity=0.0, const=0.0)
+        params = model.make_params(coeff=np.max(data), velocity=0.0, const=0.0)
         fit = model.fit(data, params, background=background,
                         wavelengths=wavelengths)
         return fit
 
-    def _get_doppler_shift_along_slit(self, profile: np.ndarray) -> np.ndarray:
+    def _get_doppler_shift_along_slit(self,
+                                      profile: np.ndarray) -> np.ndarray:
+        """
+        Fit a 2nd-degree polynomial to best-fit Doppler shifts to determine a
+        smooth Doppler shift along the slit.
+        """
         masked_data = (self._data_2d - self._sky_line -
                        self._background_2d) * self._mask.target_mask
         velocities = np.zeros(self._nspa)
@@ -318,7 +326,8 @@ class _Background:
         sky_line_image = sky_line_image.flatten()[ind.astype(int)]
         return sky_line_image * coeff
 
-    def _fit_sky_line_2d(self, background) -> None:
+    def _fit_sky_line_2d(self,
+                         background: np.ndarray) -> None:
         """
         Lmfit sky line template fitting model.
         """
@@ -415,37 +424,65 @@ class _Background:
                 self._background_unc_2d ** 2 + background_uncertainty ** 2)
 
     def _remove_skyline(self) -> None:
+        """
+        Wrapper function for removing sky line(s).
+        """
         self._fit_row_background(mask_skyline=True)
 
     def _fit_2d_background(self) -> None:
+        """
+        Wrapper function for fitting 2D background.
+        """
         self._fit_row_background(mask_skyline=False)
 
     @property
     def best_fit_2d(self) -> u.Quantity:
+        """
+        Best-fit 2D background.
+        """
         return self._background_2d * self._unit
 
     @property
     def best_fit_uncertainty_2d(self) -> u.Quantity:
+        """
+        Best-fit 2D background uncertainty.
+        """
         return self._background_unc_2d * self._unit
 
     @property
     def data_2d(self) -> u.Quantity:
+        """
+        Input 2D spectrum data (background NOT subtracted).
+        """
         return self._data_2d * self._unit
 
     @property
     def uncertainty_2d(self) -> u.Quantity:
+        """
+        Input 2D spectrum data uncertainty (background uncertainty NOT
+        propagated).
+        """
         return self._uncertainty_2d * self._unit
 
     @property
     def sky_line_fit(self) -> u.Quantity:
+        """
+        Best-fit 2D sky line.
+        """
         return self._sky_line * self._unit
 
     @property
     def bg_sub_data_2d(self) -> u.Quantity:
+        """
+        Input 2D spectrum data with background subtracted.
+        """
         return (self._data_2d - self._sky_line -
                 self._background_2d) * self._unit
 
     @property
     def bg_sub_uncertainty_2d(self) -> u.Quantity:
+        """
+        Input 2D spectrum uncertainty with background uncertainty propagated.
+        """
         return np.sqrt(self._uncertainty_2d**2
                        + self._background_unc_2d**2) * self._unit

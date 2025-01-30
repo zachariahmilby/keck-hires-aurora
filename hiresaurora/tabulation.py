@@ -20,10 +20,6 @@ class TabulatedResults:
     retrievals.
     """
 
-    _superscripts = {'⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
-                     '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
-                     '⁺': '+', '⁻': '-'}
-
     def __init__(self,
                  calibrated_data_path: str or Path,
                  excluded: list[int] or dict[str, list[int]],
@@ -43,7 +39,8 @@ class TabulatedResults:
         self._excluded = excluded
         self._aurora_lines = AuroraLines(extended=extended)
 
-    def _make_mpl_table(self, results: pd.DataFrame) -> None:
+    def _make_mpl_table(self,
+                        results: pd.DataFrame) -> None:
         """
         Save a color-coded summary table.
         """
@@ -144,7 +141,11 @@ class TabulatedResults:
 
     # noinspection DuplicatedCode
     def _calculate_averages_of_individuals(
-            self, results: pd.DataFrame) -> pd.DataFrame:
+            self,
+            results: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculated weighted average of individual results.
+        """
         new_data = pd.DataFrame()
         rows = results['Observation Time'].to_numpy()
         rows = np.insert(rows, -1, 'Average of Above')
@@ -249,7 +250,8 @@ class TabulatedResults:
 
 
 def tabulate_results(calibrated_data_path: str or Path,
-                     excluded: [int], extended: bool) -> TabulatedResults:
+                     excluded: [int],
+                     extended: bool) -> TabulatedResults:
     """
     Wrapper function to tabulate aurora results.
 

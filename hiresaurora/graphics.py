@@ -12,10 +12,12 @@ from hiresaurora.general import rcparams, FuzzyQuantity
 plt.style.use(rcparams)
 
 
-def contour_rect_slow(im):
+def contour_rect_slow(im) -> list[tuple[float, float, float, float]]:
     """
+    Code to calculate pixel outlines.
+
     Code copied from https://stackoverflow.com/questions/40892203/
-    can-matplotlib-contours-match-pixel-edges
+    can-matplotlib-contours-match-pixel-edges.
     """
     pad = np.pad(im, [(1, 1), (1, 1)])  # noqa
     im0 = np.abs(np.diff(pad, n=1, axis=0))[:, 1:]
@@ -29,7 +31,8 @@ def contour_rect_slow(im):
     return lines
 
 
-def _place_colorbar(img: plt.cm.ScalarMappable, cax: plt.Axes):
+def _place_colorbar(img: plt.cm.ScalarMappable,
+                    cax: plt.Axes) -> None:
     """
     Place a colorbar and label it with units.
     """
@@ -39,7 +42,8 @@ def _place_colorbar(img: plt.cm.ScalarMappable, cax: plt.Axes):
     cax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
 
 
-def _place_label(label: str, axis: plt.Axes):
+def _place_label(label: str,
+                 axis: plt.Axes) -> None:
     """
     Place a label in the corner of an axis.
     """
@@ -50,7 +54,7 @@ def _place_label(label: str, axis: plt.Axes):
 
 
 # noinspection DuplicatedCode
-def make_quicklook(file_path: Path):
+def make_quicklook(file_path: Path) -> None:
     """
     Make a calibrated data quicklook for a given data file.
     """

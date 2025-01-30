@@ -12,19 +12,44 @@ _package_directory = Path(__file__).resolve().parent
 
 rcparams = Path(_package_directory, 'anc', 'rcparams.mplstyle')
 
-color_dict = {'red': '#D62728', 'orange': '#FF7F0E', 'yellow': '#FDB813',
-              'green': '#2CA02C', 'blue': '#0079C1', 'violet': '#9467BD',
-              'cyan': '#17BECF', 'magenta': '#D64ECF', 'brown': '#8C564B',
-              'darkgrey': '#3F3F3F', 'grey': '#7F7F7F', 'lightgrey': '#BFBFBF'}
+color_dict = {'red': '#D62728',
+              'orange': '#FF7F0E',
+              'yellow': '#FDB813',
+              'green': '#2CA02C',
+              'blue': '#0079C1',
+              'violet': '#9467BD',
+              'cyan': '#17BECF',
+              'magenta': '#D64ECF',
+              'brown': '#8C564B',
+              'darkgrey': '#3F3F3F',
+              'grey': '#7F7F7F',
+              'lightgrey': '#BFBFBF'}
 
+superscripts = {'⁰': '0',
+                '¹': '1',
+                '²': '2',
+                '³': '3',
+                '⁴': '4',
+                '⁵': '5',
+                '⁶': '6',
+                '⁷': '7',
+                '⁸': '8',
+                '⁹': '9',
+                '⁺': '+',
+                '⁻': '-'}
 
-naif_codes = {'Jupiter': '599', 'Io': '501', 'Europa': '502',
-              'Ganymede': '503', 'Callisto': '504', 'Maunakea': '568'}
+naif_codes = {'Jupiter': '599',
+              'Io': '501',
+              'Europa': '502',
+              'Ganymede': '503',
+              'Callisto': '504',
+              'Maunakea': '568'}
 
+# noinspection PyUnresolvedReferences
+rJ = u.def_unit('R_J', represents=c.R_jup)
 
 # lines to fit and remove from background spectra
 known_emission_lines = [557.7339, 630.0304, 636.3776] * u.nm
-
 
 def _make_log(path: Path):
     if not path.exists():
@@ -33,26 +58,47 @@ def _make_log(path: Path):
         pass
 
 
-def _write_log(path: Path, string: str):
+def _write_log(path: Path,
+               string: str):
     with open(Path(path, 'log.txt'), 'a') as file:
         file.write(string + '\n')
 
 
-def _log(path, string, silent: bool = False):
+def _log(path,
+         string, silent: bool = False,
+         new_line: bool = True):
     _write_log(path, string)
     if not silent:
-        print(string)
+        print("\33[2K\r", end="")
+        if not new_line:
+            print(string, end='\r')
+        else:
+            print(string)
 
 
 # noinspection PyUnresolvedReferences
-def _doppler_shift_wavelengths(wavelengths: u.Quantity, velocity):
+def _doppler_shift_wavelengths(wavelengths: u.Quantity,
+                               velocity: u.Quantity) -> u.Quantity:
     """
     Apply Doppler shift to wavelengths.
     """
     return (wavelengths * (1 - velocity.si / c.c)).si.to(u.nm)
 
 
-def _slit_kernel(slit_width_bins) -> CustomKernel:
+def _slit_kernel(slit_width_bins: int | float) -> CustomKernel:
+    """
+    Empirically-determined HIRES slit kernel.
+
+    Parameters
+    ----------
+    slit_width_bins : int or float
+        Width of HIRES slit in bins.
+
+    Returns
+    -------
+    CustomKernel
+        An Astropy kernel for use within `astropy.convolution`.
+    """
     model = RectangleModel(form='logistic')
     params = Parameters()
     params.add('amplitude', value=1)
@@ -70,7 +116,9 @@ class _EmissionLine:
     """
     Class to hold emission line information.
     """
-    def __init__(self, wavelengths: u.Quantity, species: str,
+    def __init__(self,
+                 wavelengths: u.Quantity,
+                 species: str,
                  ratios: [float, int] = None):
         self._wavelengths = wavelengths
         self._species = species
@@ -97,6 +145,7 @@ class _EmissionLine:
         return self._ratios
 
 
+"""Full set of emission lines for Io."""
 _emission_lines = {
     '342.7 nm [Na I]': _EmissionLine(wavelengths=[342.6858] * u.nm,
                                      species='[Na I]'),
@@ -173,6 +222,7 @@ _emission_lines = {
         ratios=[1, 100/150, 80/150]),
 }
 
+"""Subset of emission lines for Europa, Ganymede and Callisto."""
 icy_satellite_lines = ['557.7 nm [O I]',
                        '630.0 nm [O I]',
                        '636.4 nm [O I]',
@@ -185,7 +235,8 @@ class AuroraLines:
     """
     Class to hold aurora emission line information.
     """
-    def __init__(self, extended: bool = False):
+    def __init__(self,
+                 extended: bool = False):
         """
         Parameters
         ----------
@@ -207,7 +258,7 @@ class AuroraLines:
             print_str += '\n' + f'   {name}'
         return print_str
 
-    def _get_aurora_line_wavelengths(self) -> [u.Quantity]:
+    def _get_aurora_line_wavelengths(self) -> list[u.Quantity]:
         """
         Retrieve a list of all of the aurora wavelengths. Each is in a sublist
         to keep closely-spaced doublets and triplets together.
@@ -221,7 +272,10 @@ class AuroraLines:
                     for key in _emission_lines.keys()
                     if key in icy_satellite_lines]
 
-    def _get_aurora_line_ratios(self) -> [[float]]:
+    def _get_aurora_line_ratios(self) -> list[np.ndarray]:
+        """
+        Retrieve a list of all the line brightness ratios.
+        """
         if self._extended:
             return [_emission_lines[key].ratios
                     for key in _emission_lines.keys()]
@@ -230,7 +284,7 @@ class AuroraLines:
                     for key in _emission_lines.keys()
                     if key in icy_satellite_lines]
 
-    def _get_aurora_line_names(self) -> [str]:
+    def _get_aurora_line_names(self) -> list[str]:
         """
         Get the atom name and wavelength to 1 decimal place. In astronomer
         notation (I for neutral, II for singly-ionized, etc., with square
@@ -244,17 +298,27 @@ class AuroraLines:
 
     @property
     def wavelengths(self) -> [u.Quantity]:
+        """
+        Line wavelengths.
+        """
         return self._aurora_line_wavelengths
 
     @property
     def names(self) -> [str]:
+        """
+        Line names.
+        """
         return self._aurora_line_names
 
     @property
     def ratios(self) -> [float]:
+        """
+        Relative line brightness ratios.
+        """
         return self._aurora_line_ratios
 
 
+# TODO: to be replaced by dedicated FuzzyQuantity package in development
 class FuzzyQuantity:
     """
     A class for proper formatting of values with uncertainties. I've only
@@ -264,9 +328,18 @@ class FuzzyQuantity:
     when you are printing out uncerainties or otherwise reporting them in
     print.
     """
-    _superscripts = {'0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-                     '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
-                     '+': '⁺', '-': '⁻'}
+    _superscripts = {'0': '⁰',
+                     '1': '¹',
+                     '2': '²',
+                     '3': '³',
+                     '4': '⁴',
+                     '5': '⁵',
+                     '6': '⁶',
+                     '7': '⁷',
+                     '8': '⁸',
+                     '9': '⁹',
+                     '+': '⁺',
+                     '-': '⁻'}
 
     def __init__(self, value: int or float or u.Quantity,
                  uncertainty: int or float or u.Quantity):

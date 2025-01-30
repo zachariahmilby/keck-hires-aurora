@@ -11,7 +11,7 @@ from hiresaurora.ephemeris import _get_ephemeris
 from hiresaurora.general import _package_directory, _doppler_shift_wavelengths
 
 
-def _get_solar_spectral_brightness() -> (u.Quantity, u.Quantity):
+def _get_solar_spectral_brightness() -> tuple[u.Quantity, u.Quantity]:
     """
     This function retrieves the theoretical solar spectral radiance above
     Earth's atmosphere at 1 au from the Sun from 320 to 1000 nm at 1 nm
@@ -44,12 +44,27 @@ class _FluxCalibration:
                  order: int,
                  trim_bottom: int,
                  trim_top: int):
+        """
+        Parameters
+        ----------
+        reduced_data_directory : str or Path
+            Path to the reduced data directory.
+        wavelengths : u.Quantity
+            Wavelength(s) to use for calibration. For multiplet lines the
+            average is used.
+        order : int
+            The order containing the spectrum with the targeted wavelength(s).
+        trim_bottom : int
+            Number of rows to trim from the top of the 2D spectrum.
+        trim_top : int
+            Number of rows to trim from the bottom of the 2D spectrum.
+        """
         self._reduced_data_directory = Path(reduced_data_directory)
         self._wavelength = wavelengths.mean().to(u.nm).value
         self._order = order
         self._trim_bottom = trim_bottom
         self._trim_top = trim_top
-        self._calibration_factors = self._calculate_calibration_factors()
+        self._calibration_factors = self._calculate_calibration_factor()
 
     def _get_flux_calibration_file(self):
         """
@@ -60,7 +75,7 @@ class _FluxCalibration:
 
     # noinspection PyUnresolvedReferences
     @staticmethod
-    def _get_jupiter_meridian_reflectivity() -> (u.Quantity, u.Quantity):
+    def _get_jupiter_meridian_reflectivity() -> tuple[u.Quantity, u.Quantity]:
         """
         This function retrieves reflectivity (also called I/F) for Jupiter's
         meridian from 320 to 1000 nm at 1 nm resolution. I stole these data
@@ -77,7 +92,8 @@ class _FluxCalibration:
         return wavelength, reflectivity
 
     def _get_jupiter_spectral_brightness(
-            self, time: Time) -> (u.Quantity, u.Quantity):
+            self,
+            time: Time) -> tuple[u.Quantity, u.Quantity]:
         """
         Load the solar reference spectrum and Jupiter's meridian reflectivity
         and multiply them.
@@ -92,10 +108,10 @@ class _FluxCalibration:
         return wavelength, scaled_brightness
 
     # noinspection PyUnresolvedReferences
-    def _calculate_calibration_factors(self):
+    def _calculate_calibration_factor(self) -> dict[str, u.Quantity]:
         """
-        Calculate the calibration factors and their uncertainties for each
-        order in units of (electrons/s/sr)/(R/nm).
+        Calculate the calibration factor and uncertainty for a specific
+        wavelength in units of (electrons/s/sr)/(R/nm).
         """
 
         # make slice for order and trims
@@ -116,8 +132,9 @@ class _FluxCalibration:
 
         # remove doppler shift from wavelengths
         eph = _get_ephemeris(
-            target='Jupiter', time=Time(date, format='isot', scale='utc'))
-        velocity = eph['delta_rate'].value[0] * eph['delta_rate'].unit
+            target='Jupiter',
+            time=Time(header['DATE-APP'], format='isot', scale='utc'))
+        velocity = eph['delta_rate'].quantity[0]
         shifted_wavelengths = _doppler_shift_wavelengths(wavelengths, velocity)
 
         # get spectral location for wavelength
@@ -159,13 +176,13 @@ class _FluxCalibration:
                                   photon_flux).to(output_unit)
 
         # return the factors
-        return {'calibration_factors': calibration_factor,
-                'calibration_factors_unc': calibration_factor_unc}
+        return {'calibration_factor': calibration_factor,
+                'calibration_factor_unc': calibration_factor_unc}
 
     def calibrate(self,
                   data: u.Quantity,
                   unc: u.Quantity,
-                  target_size: u.Quantity) -> (u.Quantity, u.Quantity):
+                  target_size: u.Quantity) -> tuple[u.Quantity, u.Quantity]:
         """
         Wrapper function to calibrate data and uncertainty arrays from
         electrons/s to rayleighs/nm. Calibration assumes emission from a disk
@@ -188,18 +205,28 @@ class _FluxCalibration:
             warnings.simplefilter('ignore', category=RuntimeWarning)
             data /= target_size
             unc /= target_size
-            calibrated_data = data / self.calibration_factors
+            calibrated_data = (
+                    data / self._calibration_factors['calibration_factor'])
             data_nsr = unc / data
-            calibration_nsr = (self.calibration_factors_unc /
-                               self.calibration_factors)
+            calibration_nsr = (
+                    self._calibration_factors['calibration_factor_unc'] /
+                    self._calibration_factors['calibration_factor'])
             calibrated_unc = np.abs(calibrated_data) * np.sqrt(
                 data_nsr ** 2 + calibration_nsr ** 2)
         return calibrated_data.to(u.R / u.nm), calibrated_unc.to(u.R / u.nm)
 
     @property
-    def calibration_factors(self) -> u.Quantity:
-        return self._calibration_factors['calibration_factors']
+    def calibration_factor(self) -> u.Quantity:
+        """
+        Calibration factor for specified wavelength in units of
+        (electrons/s/sr)/(R/nm).
+        """
+        return self._calibration_factors['calibration_factor']
 
     @property
     def calibration_factors_unc(self) -> u.Quantity:
-        return self._calibration_factors['calibration_factors_unc']
+        """
+        Calibration factor uncertainty for a specified wavelength in units of
+        (electrons/s/sr)/(R/nm).
+        """
+        return self._calibration_factors['calibration_factor_unc']
