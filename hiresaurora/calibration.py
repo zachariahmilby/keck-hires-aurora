@@ -131,9 +131,12 @@ class _FluxCalibration:
                 hdul['BIN_CENTER_WAVELENGTHS'].data[self._order] * u.nm
 
         # remove doppler shift from wavelengths
-        eph = _get_ephemeris(
-            target='Jupiter',
-            time=Time(header['DATE-APP'], format='isot', scale='utc'))
+        time = Time(header['DATE-OBS'], format='isot', scale='utc')
+        eph = _get_ephemeris(target='Jupiter',
+                             time=time)
+        time -= eph['lighttime'].quantity[0]
+        eph = _get_ephemeris(target='Jupiter',
+                             time=time)
         velocity = eph['delta_rate'].quantity[0]
         shifted_wavelengths = _doppler_shift_wavelengths(wavelengths, velocity)
 
@@ -143,8 +146,7 @@ class _FluxCalibration:
 
         # load Jupiter's spectral brightness
         spectral_wavelength, spectral_brightness = \
-            self._get_jupiter_spectral_brightness(
-                time=Time(date, format='isot', scale='utc'))
+            self._get_jupiter_spectral_brightness(time=time)
 
         # add units to each array
         data *= u.electron / u.s

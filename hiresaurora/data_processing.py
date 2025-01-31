@@ -140,7 +140,12 @@ class _ImageData:
         Query the JPL Horizons ephemeris tool to get ephemeris table.
         """
         target = self._data_header['TARGET']
-        time = Time(self._data_header['DATE-APP'], format='isot', scale='utc')
+        time = Time(self._data_header['DATE-OBS'], format='isot', scale='utc')
+        ephemeris = _get_ephemeris(target=target,
+                                   time=time,
+                                   skip_daylight=False,
+                                   airmass_lessthan=None)
+        time -= ephemeris['lighttime'].quantity[0]
         ephemeris = _get_ephemeris(target=target,
                                    time=time,
                                    skip_daylight=False,
@@ -442,18 +447,29 @@ class _LineData:
         header.
         """
         if isinstance(data, u.Quantity):
-            hdu = fits.ImageHDU(data=data.value, header=header, name=name)
+            hdu = fits.ImageHDU(data=data.value,
+                                header=header,
+                                name=name)
             if not average:
-                self._fix_individual_header(hdu, unit=data.unit,
+                self._fix_individual_header(hdu,
+                                            unit=data.unit,
                                             comment=comment)
             else:
-                self._fix_average_header(hdu, unit=data.unit, comment=comment)
+                self._fix_average_header(hdu,
+                                         unit=data.unit,
+                                         comment=comment)
         else:
-            hdu = fits.ImageHDU(data=data, header=header, name=name)
+            hdu = fits.ImageHDU(data=data,
+                                header=header,
+                                name=name)
             if not average:
-                self._fix_individual_header(hdu, unit=None, comment=comment)
+                self._fix_individual_header(hdu,
+                                            unit=None,
+                                            comment=comment)
             else:
-                self._fix_average_header(hdu, unit=None, comment=comment)
+                self._fix_average_header(hdu,
+                                         unit=None,
+                                         comment=comment)
         return hdu
 
     @staticmethod
@@ -551,6 +567,10 @@ class _LineData:
         if apparent_time is not None:
             primary_hdu.header.set(
                 'DATE-APP', f'{apparent_time.isot}',
+                'apparent UTC datetime at target')
+        else:
+            primary_hdu.header.set(
+                'DATE-APP', f'{Time(primary_hdu.header["DATE-OBS"]).isot}',
                 'apparent UTC datetime at target')
 
     # noinspection DuplicatedCode
