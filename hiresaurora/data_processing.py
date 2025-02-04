@@ -826,19 +826,23 @@ class _LineData:
             return savename
 
     @staticmethod
-    def _set_overlap_to_nan(data: u.Quantity) -> u.Quantity:
+    def _set_overlap_to_nan(data: u.Quantity,
+                            unc: u.Quantity) -> tuple[u.Quantity:, u.Quantity]:
         """
         Remove sections of 2D spectra where there was either overlap of
         adjacent orders or where an order went off/between detectors.
         """
         data[np.where(data.value == 0.0)] = np.nan
+        unc[np.where(unc.value == 0.0)] = np.nan
         keep1 = []
         for col in range(data.shape[1]):
-            if ~np.isnan(data[:, col]).all():
+            if ~np.isnan(data[:, col]).all() or ~np.isnan(unc[:, col]).all():
                 keep1.append(col)
         keep1 = np.array(keep1)
-        ind = np.where(~np.isnan(np.sum(data[:, keep1], axis=1)))[0]
-        return data[ind]
+        ind0 = np.where(~np.isnan(np.sum(data[:, keep1], axis=1)))[0]
+        ind1 = np.where(~np.isnan(np.sum(unc[:, keep1], axis=1)))[0]
+        ind = np.unique(np.concatenate((ind0, ind1)))
+        return data[ind], unc[ind]
 
     @staticmethod
     def _get_data_1d(data_2d,
@@ -1083,13 +1087,11 @@ class _LineData:
         for i, (data, trace) in enumerate(zip(self._data.science, traces)):
             geometry = Geometry(target=data.data_header['TARGET'],
                                 observation_time=data.data_header['DATE-OBS'])
-            data_selection = self._set_overlap_to_nan(
-                deepcopy(data.data[order][select]))
-            unc_selection = self._set_overlap_to_nan(
+            data_selection, unc_selection = self._set_overlap_to_nan(
+                deepcopy(data.data[order][select]),
                 deepcopy(data.uncertainty[order][select]))
-            trace_data_selection = self._set_overlap_to_nan(
-                deepcopy(trace.data[order][select]))
-            trace_unc_selection = self._set_overlap_to_nan(
+            trace_data_selection, trace_unc_selection = self._set_overlap_to_nan(
+                deepcopy(trace.data[order][select]),
                 deepcopy(trace.uncertainty[order][select]))
             try:
                 trace_fit, trace_fit_unc = _fit_trace(
